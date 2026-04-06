@@ -79,7 +79,7 @@ sudo bash deploy/install.sh
 
 # Создать конфиг
 sudo cp configs/.env.example /opt/bot-news/.env
-sudo nano /opt/bot-news/.env   # заполнить токены
+sudo vim /opt/bot-news/.env   # заполнить токены
 sudo chmod 600 /opt/bot-news/.env
 ```
 

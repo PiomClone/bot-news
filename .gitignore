@@ -16,6 +16,7 @@ coverage.html
 .claude/
 .idea/
 .vscode/
+.history/
 
 # OS
 .DS_Store
