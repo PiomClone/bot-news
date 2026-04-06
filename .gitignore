@@ -1,8 +1,21 @@
+# Секреты и конфиг
 .env
 configs/.env
 *.db
+
+# Артефакты сборки
 bot-news
 build/
 tmp/
+
+# Тесты
 coverage.out
 coverage.html
+
+# IDE
+.claude/
+.idea/
+.vscode/
+
+# OS
+.DS_Store

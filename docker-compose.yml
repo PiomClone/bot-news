@@ -5,9 +5,17 @@ services:
       - configs/.env
     volumes:
       - bot-news-data:/app/data
-    restart: unless-stopped
+    ports:
+      - "8080:8080"
     environment:
       - DB_PATH=/app/data/bot-news.db
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
 
 volumes:
   bot-news-data:
