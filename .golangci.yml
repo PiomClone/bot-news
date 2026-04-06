@@ -1,0 +1,64 @@
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters-settings:
+  gocyclo:
+    min-complexity: 15
+  gocognit:
+    min-complexity: 15
+  funlen:
+    lines: 80
+    statements: 50
+  goconst:
+    min-len: 3
+    min-occurrences: 3
+  lll:
+    line-length: 120
+  goimports:
+    local-prefixes: bot-news
+  govet:
+    enable:
+      - shadow
+
+linters:
+  enable:
+    - bodyclose
+    - errcheck
+    - funlen
+    - goconst
+    - gocyclo
+    - gofmt
+    - goimports
+    - gosec
+    - gosimple
+    - govet
+    - ineffassign
+    - lll
+    - misspell
+    - noctx
+    - revive
+    - staticcheck
+    - typecheck
+    - unconvert
+    - unused
+    - whitespace
+
+  disable:
+    - godox
+    - wsl
+    - gochecknoglobals
+    - depguard
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - funlen
+        - gocyclo
+    - path: cmd/
+      linters:
+        - funlen
+
+  max-issues-per-linter: 0
+  max-same-issues: 0

@@ -1,0 +1,8 @@
+.env
+configs/.env
+*.db
+bot-news
+build/
+tmp/
+coverage.out
+coverage.html

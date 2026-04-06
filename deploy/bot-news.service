@@ -1,0 +1,28 @@
+[Unit]
+Description=bot-news Telegram Digest Service
+After=network.target
+
+[Service]
+Type=simple
+User=botnews
+Group=botnews
+WorkingDirectory=/opt/bot-news
+ExecStart=/opt/bot-news/bot-news
+Restart=always
+RestartSec=5
+Environment=HOME=/opt/bot-news
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bot-news
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/bot-news
+
+[Install]
+WantedBy=multi-user.target

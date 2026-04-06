@@ -1,0 +1,13 @@
+services:
+  bot-news:
+    build: .
+    env_file:
+      - configs/.env
+    volumes:
+      - bot-news-data:/app/data
+    restart: unless-stopped
+    environment:
+      - DB_PATH=/app/data/bot-news.db
+
+volumes:
+  bot-news-data:

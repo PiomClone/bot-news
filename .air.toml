@@ -1,0 +1,23 @@
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/bot-news ./cmd/bot-news"
+  bin = "./tmp/bot-news"
+  delay = 1000
+  exclude_dir = ["tmp", "build", "deploy", "testdata"]
+  exclude_regex = ["_test.go"]
+  include_ext = ["go", "env"]
+  log = "build-errors.log"
+
+[color]
+  build = "yellow"
+  main = "magenta"
+  runner = "green"
+  watcher = "cyan"
+
+[log]
+  time = true
+
+[misc]
+  clean_on_exit = true
