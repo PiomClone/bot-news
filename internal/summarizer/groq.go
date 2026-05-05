@@ -55,17 +55,17 @@ func (g *GroqSummarizer) Summarize(ctx context.Context, articles []storage.Artic
 			"Правила:\n"+
 			"1. Сгруппируй статьи по 2-4 смысловым темам. Для каждой темы придумай заголовок с 2-3 подходящими эмодзи. Заголовок выдели жирным (тег <b>...</b>).\n"+
 			"2. Под каждой темой — краткие пункты «- » (дефис + пробел). Один пункт может объединять несколько похожих новостей.\n"+
-			"3. Каждый пункт начинай с источника в формате «@channel: ».\n"+
+			"3. Каждый пункт начинай с источника в формате «🔹 @channel: ».\n"+
 			"4. В каждом пункте ОБЯЗАТЕЛЬНО сделай гиперссылку на ключевое слово-действие или событие: <a href=\"url\">слово</a>. Не вставляй голые ссылки.\n"+
 			"5. Если новость не содержит важной информации (реклама, анонсы, самопиар) — пропусти её.\n"+
 			"6. Используй только русский язык. Никаких вступлений и заключений — только чистый дайджест.\n\n"+
 			"Формат вывода:\n"+
-			"<b>Выжимка за [дата]:</b>\n\n"+
+			"<b>Дайджест за %s</b>\n\n"+
 			"<b>эмодзи ТЕМА</b>\n"+
-			"- @channel: Текст новости с <a href=\"url\">ссылкой</a>.\n"+
+			"- 🔹 @channel: Текст новости с <a href=\"url\">ссылкой</a>.\n"+
 			"- ...\n\n"+
 			"Материалы для обработки:\n%s",
-		date, sb.String(),
+		date, date, sb.String(),
 	)
 
 	resp, err := g.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
@@ -81,7 +81,7 @@ func (g *GroqSummarizer) Summarize(ctx context.Context, articles []storage.Artic
 	// Сохраняем лимиты из заголовков
 	h := resp.GetRateLimitHeaders()
 	if h.LimitRequests > 0 {
-		g.limits = fmt.Sprintf("🤖 *AI Лимиты:* запросов %d/%d, токенов %d/%d",
+		g.limits = fmt.Sprintf("🤖 <b>AI Лимиты:</b> запросов %d/%d, токенов %d/%d",
 			h.RemainingRequests, h.LimitRequests, h.RemainingTokens, h.LimitTokens)
 	}
 
@@ -89,6 +89,5 @@ func (g *GroqSummarizer) Summarize(ctx context.Context, articles []storage.Artic
 		return "", fmt.Errorf("groq: пустой ответ")
 	}
 
-	header := fmt.Sprintf("<b>Дайджест за %s</b>\n\n", date)
-	return header + resp.Choices[0].Message.Content, nil
+	return resp.Choices[0].Message.Content, nil
 }
