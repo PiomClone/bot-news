@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"bot-news/internal/config"
@@ -64,5 +65,20 @@ func TestLoadFromEnv_FetchInterval_Invalid(t *testing.T) {
 	cfg := config.LoadFromEnv()
 	if cfg.FetchIntervalMin != 30 {
 		t.Errorf("при невалидном значении должен быть дефолт 30, получили %d", cfg.FetchIntervalMin)
+	}
+}
+
+func TestLoadDotEnv_StripsQuotes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".env")
+	if err := os.WriteFile(path, []byte("DIGEST_CRON=\"CRON_TZ=Europe/Moscow 0 9,21 * * *\"\n"), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	os.Unsetenv("DIGEST_CRON")
+	t.Cleanup(func() { os.Unsetenv("DIGEST_CRON") })
+
+	config.LoadDotEnv(path)
+
+	if got := os.Getenv("DIGEST_CRON"); got != "CRON_TZ=Europe/Moscow 0 9,21 * * *" {
+		t.Fatalf("DIGEST_CRON: получили %q", got)
 	}
 }

@@ -88,6 +88,7 @@ func loadDotEnvFile(path string) bool {
 		}
 		key = strings.TrimSpace(key)
 		val = strings.TrimSpace(val)
+		val = strings.Trim(val, `"'`)
 		if os.Getenv(key) == "" {
 			os.Setenv(key, val)
 		}
