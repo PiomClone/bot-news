@@ -408,6 +408,10 @@ func (a *app) cleanup(ctx context.Context) {
 	}
 	if n > 0 {
 		slog.Info("очистка завершена", "deleted_count", n)
+		msg := fmt.Sprintf("🧹 <b>Техническое обслуживание</b>\n\nБаза данных очищена. Удалено старых статей: %d", n)
+		if err := a.notif.SendToAdmin(ctx, a.cfg.TelegramAdminID, msg); err != nil {
+			slog.Error("ошибка отправки уведомления об очистке", "error", err)
+		}
 	}
 }
 

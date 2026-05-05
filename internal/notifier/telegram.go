@@ -54,6 +54,27 @@ func (t *Telegram) Send(ctx context.Context, text string) error {
 	return nil
 }
 
+func (t *Telegram) SendToAdmin(ctx context.Context, adminID int64, text string) error {
+	if adminID == 0 {
+		return nil
+	}
+	opts := &telebot.SendOptions{
+		ParseMode:             telebot.ModeHTML,
+		DisableWebPagePreview: true,
+	}
+	for _, chunk := range splitMessage(text, maxMessageLen) {
+		chunk := chunk
+		err := retry.Do(ctx, 3, func() error {
+			_, err := t.bot.Send(numericRecipient(adminID), chunk, opts)
+			return err
+		})
+		if err != nil {
+			return fmt.Errorf("telegram admin send: %w", err)
+		}
+	}
+	return nil
+}
+
 // parseRecipient принимает "@username" или числовой ID канала.
 func parseRecipient(channelID string) (telebot.Recipient, error) {
 	if strings.HasPrefix(channelID, "@") {
