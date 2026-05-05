@@ -13,6 +13,7 @@ import (
 // Summarizer формирует текст дайджеста из списка статей.
 type Summarizer interface {
 	Summarize(ctx context.Context, articles []storage.Article) (string, error)
+	GetLimits() string
 }
 
 func sourceLabel(feedURL string) string {
@@ -69,4 +70,8 @@ func (s *SimpleSummarizer) Summarize(_ context.Context, articles []storage.Artic
 
 	fmt.Fprintf(&sb, "\nВсего: %d материалов", len(articles))
 	return sb.String(), nil
+}
+
+func (s *SimpleSummarizer) GetLimits() string {
+	return ""
 }

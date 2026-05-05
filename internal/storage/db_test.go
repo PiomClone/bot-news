@@ -235,3 +235,73 @@ func TestGetLatestPerFeed(t *testing.T) {
 		t.Fatalf("ожидали, что отправленный материал тоже попадет в latest")
 	}
 }
+
+func TestDigests(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	// Сначала пусто
+	last, err := db.GetLastDigest(ctx)
+	if err != nil {
+		t.Fatalf("GetLastDigest (empty): %v", err)
+	}
+	if last != "" {
+		t.Errorf("ожидали пустую строку, получили %q", last)
+	}
+
+	// Сохраняем первый
+	content1 := "Дайджест 1"
+	if err := db.SaveDigest(ctx, content1); err != nil {
+		t.Fatalf("SaveDigest 1: %v", err)
+	}
+
+	// Сохраняем второй
+	content2 := "Дайджест 2"
+	if err := db.SaveDigest(ctx, content2); err != nil {
+		t.Fatalf("SaveDigest 2: %v", err)
+	}
+
+	// Должен вернуть последний (второй)
+	last, err = db.GetLastDigest(ctx)
+	if err != nil {
+		t.Fatalf("GetLastDigest: %v", err)
+	}
+	if last != content2 {
+		t.Errorf("ожидали %q, получили %q", content2, last)
+	}
+}
+
+func TestDeleteOldArticles(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	old := now.AddDate(0, 0, -40)
+
+	mustSave(t, db, []storage.Article{
+		{FeedURL: testFeedF, GUID: "old-sent", Title: "Старая отправленная", FetchedAt: old},
+		{FeedURL: testFeedF, GUID: "old-unsent", Title: "Старая неотправленная", FetchedAt: old},
+		{FeedURL: testFeedF, GUID: "new-sent", Title: "Новая отправленная", FetchedAt: now},
+	})
+
+	// Помечаем "отправленными"
+	since := now.AddDate(0, 0, -50)
+	saved, _ := db.GetUnsent(ctx, since)
+	ids := []int64{saved[0].ID, saved[2].ID} // old-sent и new-sent
+	db.MarkSent(ctx, ids)
+
+	// Удаляем старше 30 дней
+	deleted, err := db.DeleteOldArticles(ctx, 30)
+	if err != nil {
+		t.Fatalf("DeleteOldArticles: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("ожидали удаление 1 статьи, удалено %d", deleted)
+	}
+
+	// Проверяем, что осталась 1 неотправленная и 1 новая отправленная
+	stats, _ := db.GetStats(ctx)
+	if stats.TotalArticles != 2 {
+		t.Errorf("ожидали 2 статьи в базе, осталось %d", stats.TotalArticles)
+	}
+}

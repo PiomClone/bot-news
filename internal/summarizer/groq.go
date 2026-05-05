@@ -17,6 +17,7 @@ const groqBaseURL = "https://api.groq.com/openai/v1"
 type GroqSummarizer struct {
 	client *openai.Client
 	model  string
+	limits string
 }
 
 func NewGroq(apiKey, model string) *GroqSummarizer {
@@ -26,6 +27,10 @@ func NewGroq(apiKey, model string) *GroqSummarizer {
 		client: openai.NewClientWithConfig(cfg),
 		model:  model,
 	}
+}
+
+func (g *GroqSummarizer) GetLimits() string {
+	return g.limits
 }
 
 func (g *GroqSummarizer) Summarize(ctx context.Context, articles []storage.Article) (string, error) {
@@ -71,6 +76,13 @@ func (g *GroqSummarizer) Summarize(ctx context.Context, articles []storage.Artic
 	})
 	if err != nil {
 		return "", fmt.Errorf("groq: %w", err)
+	}
+
+	// Сохраняем лимиты из заголовков
+	h := resp.GetRateLimitHeaders()
+	if h.LimitRequests > 0 {
+		g.limits = fmt.Sprintf("🤖 *AI Лимиты:* запросов %d/%d, токенов %d/%d",
+			h.RemainingRequests, h.LimitRequests, h.RemainingTokens, h.LimitTokens)
 	}
 
 	if len(resp.Choices) == 0 {

@@ -282,8 +282,9 @@ func (a *app) statsText(ctx context.Context) string {
 	if !stats.LastFetchedAt.IsZero() {
 		lastFetch = stats.LastFetchedAt.In(a.loc()).Format(timeFmt)
 	}
-	return fmt.Sprintf(
-		"📊 Статистика\n\n"+
+
+	res := fmt.Sprintf(
+		"📊 *Статистика*\n\n"+
 			"📥 Всего собрано: %d\n"+
 			"✅ Отправлено: %d\n"+
 			"📬 Не отправлено: %d\n"+
@@ -293,6 +294,12 @@ func (a *app) statsText(ctx context.Context) string {
 		stats.TotalArticles-stats.SentArticles,
 		lastFetch,
 	)
+
+	if aiLimits := a.sum.GetLimits(); aiLimits != "" {
+		res += "\n\n" + aiLimits
+	}
+
+	return res
 }
 
 func (a *app) latestText(ctx context.Context) string {
@@ -304,28 +311,26 @@ func (a *app) latestText(ctx context.Context) string {
 		return "материалов пока нет"
 	}
 
-	var sb strings.Builder
-	sb.WriteString("📰 Последние материалы\n")
-	var currentFeed string
-	for _, article := range articles {
-		if article.FeedURL != currentFeed {
-			currentFeed = article.FeedURL
-			fmt.Fprintf(&sb, "\n%s\n", sourceLabel(article.FeedURL))
+	slog.Info("формирую AI-обзор последних новостей по запросу", "count", len(articles))
+	
+	text, err := a.sum.Summarize(ctx, articles)
+	if err != nil {
+		slog.Warn("ошибка AI для latest, откат к простому списку", "error", err)
+		// Если AI подвел, выводим просто список
+		var sb strings.Builder
+		sb.WriteString("📰 Последние материалы (AI временно недоступен)\n")
+		var currentFeed string
+		for _, article := range articles {
+			if article.FeedURL != currentFeed {
+				currentFeed = article.FeedURL
+				fmt.Fprintf(&sb, "\n%s\n", sourceLabel(article.FeedURL))
+			}
+			fmt.Fprintf(&sb, "- %s\n  %s\n", article.Title, article.Link)
 		}
-		postedAt := article.FetchedAt
-		if !article.PublishedAt.IsZero() {
-			postedAt = article.PublishedAt
-		}
-		status := "не отправлено"
-		if article.Sent {
-			status = "отправлено"
-		}
-		fmt.Fprintf(&sb, "- %s (%s, %s)\n", article.Title, postedAt.In(a.loc()).Format(timeFmt), status)
-		if article.Link != "" {
-			fmt.Fprintf(&sb, "  %s\n", article.Link)
-		}
+		return sb.String()
 	}
-	return sb.String()
+
+	return "🆕 *Свежий обзор последних новостей (по 3 с каждого канала):*\n\n" + text
 }
 
 func sourceLabel(feedURL string) string {
@@ -370,6 +375,10 @@ func (a *app) digest(ctx context.Context) {
 		}
 	}
 	text += a.statsFooter(ctx, len(articles))
+
+	if err := a.db.SaveDigest(ctx, text); err != nil {
+		slog.Error("ошибка сохранения дайджеста в базу", "error", err)
+	}
 
 	if err := a.notif.Send(ctx, text); err != nil {
 		slog.Error("ошибка отправки в Telegram", "error", err)

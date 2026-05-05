@@ -70,8 +70,29 @@ func (s *DB) migrate() error {
 			sent         INTEGER DEFAULT 0
 		);
 		CREATE INDEX IF NOT EXISTS idx_articles_sent_fetched ON articles(sent, fetched_at);
+
+		CREATE TABLE IF NOT EXISTS digests (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			content    TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		);
 	`)
 	return err
+}
+
+func (s *DB) SaveDigest(ctx context.Context, content string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO digests (content, created_at) VALUES (?, ?)`,
+		content, time.Now().Unix())
+	return err
+}
+
+func (s *DB) GetLastDigest(ctx context.Context) (string, error) {
+	var content string
+	err := s.db.QueryRowContext(ctx, `SELECT content FROM digests ORDER BY created_at DESC, id DESC LIMIT 1`).Scan(&content)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return content, err
 }
 
 func (s *DB) SaveArticles(ctx context.Context, articles []Article) error {
