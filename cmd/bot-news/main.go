@@ -138,6 +138,10 @@ func (a *app) run() {
 		slog.Error("ошибка регистрации cron digest", "error", err)
 		os.Exit(1)
 	}
+	if _, err := c.AddFunc("0 3 * * *", func() { a.cleanup(ctx) }); err != nil {
+		slog.Error("ошибка регистрации cron cleanup", "error", err)
+		os.Exit(1)
+	}
 
 	c.Start()
 	slog.Info("bot-news запущен",
@@ -380,6 +384,17 @@ func (a *app) digest(ctx context.Context) {
 		slog.Error("ошибка пометки статей", "error", err)
 	}
 	slog.Info("дайджест отправлен", "articles", len(articles))
+}
+
+func (a *app) cleanup(ctx context.Context) {
+	n, err := a.db.DeleteOldArticles(ctx, 30)
+	if err != nil {
+		slog.Error("ошибка очистки старых статей", "error", err)
+		return
+	}
+	if n > 0 {
+		slog.Info("очистка завершена", "deleted_count", n)
+	}
 }
 
 func validateConfig(cfg config.Config) error {

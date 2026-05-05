@@ -82,8 +82,13 @@ func (s *DB) SaveArticles(ctx context.Context, articles []Article) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT OR IGNORE INTO articles (feed_url, guid, title, link, description, published_at, fetched_at)
+		INSERT INTO articles (feed_url, guid, title, link, description, published_at, fetched_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(guid) DO UPDATE SET
+			title = excluded.title,
+			link = excluded.link,
+			description = excluded.description,
+			published_at = excluded.published_at
 	`)
 	if err != nil {
 		return err
@@ -105,6 +110,17 @@ func (s *DB) SaveArticles(ctx context.Context, articles []Article) error {
 		}
 	}
 	return tx.Commit()
+}
+
+func (s *DB) DeleteOldArticles(ctx context.Context, days int) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		DELETE FROM articles 
+		WHERE fetched_at < ? AND sent = 1
+	`, time.Now().AddDate(0, 0, -days).Unix())
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 func (s *DB) GetUnsent(ctx context.Context, since time.Time) ([]Article, error) {

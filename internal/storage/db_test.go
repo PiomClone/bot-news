@@ -50,8 +50,8 @@ func TestSaveArticles_Deduplication(t *testing.T) {
 	if len(saved) != 1 {
 		t.Fatalf("ожидали 1 статью (dedup), получили %d", len(saved))
 	}
-	if saved[0].Title != "Статья 1" {
-		t.Errorf("неожиданный заголовок: %q", saved[0].Title)
+	if saved[0].Title != "Статья 1 дубль" {
+		t.Errorf("неожиданный заголовок: %q, ожидали обновление (upsert)", saved[0].Title)
 	}
 }
 
