@@ -38,19 +38,28 @@ func (g *GroqSummarizer) Summarize(ctx context.Context, articles []storage.Artic
 		return "", nil
 	}
 
-	// Формируем список статей для промпта
+	// Формируем легенду эмодзи и список статей
+	emojiMap := make(map[string]string)
 	var sb strings.Builder
 	for i, a := range articles {
 		source := a.FeedTitle
 		if source == "" {
 			source = sourceLabel(a.FeedURL)
 		}
+		emoji := GetEmoji(a.FeedURL)
+		emojiMap[source] = emoji
+
 		desc := a.Description
 		if len([]rune(desc)) > 300 {
 			desc = string([]rune(desc)[:300]) + "..."
 		}
-		fmt.Fprintf(&sb, "%d. Источник: %s\n   Заголовок: %s\n   Описание: %s\n   Ссылка: %s\n", 
-			i+1, source, a.Title, desc, a.Link)
+		fmt.Fprintf(&sb, "%d. [%s] Источник: %s\n   Заголовок: %s\n   Описание: %s\n   Ссылка: %s\n", 
+			i+1, emoji, source, a.Title, desc, a.Link)
+	}
+
+	var legendSB strings.Builder
+	for name, emoji := range emojiMap {
+		fmt.Fprintf(&legendSB, "- %s %s\n", emoji, name)
 	}
 
 	date := time.Now().Format("2 January 2006")
@@ -59,17 +68,18 @@ func (g *GroqSummarizer) Summarize(ctx context.Context, articles []storage.Artic
 			"Правила:\n"+
 			"1. Сгруппируй статьи по 2-4 смысловым темам. Для каждой темы придумай заголовок с 2-3 подходящими эмодзи. Заголовок выдели жирным (тег <b>...</b>).\n"+
 			"2. Под каждой темой — краткие пункты «- » (дефис + пробел). Один пункт может объединять несколько похожих новостей.\n"+
-			"3. Каждый пункт начинай с источника в формате «🔹 @channel: ».\n"+
+			"3. Каждый пункт начинай со СТРОГО закрепленного за каналом эмодзи и его названия (см. список ниже).\n"+
 			"4. В каждом пункте ОБЯЗАТЕЛЬНО сделай гиперссылку на ключевое слово-действие или событие: <a href=\"url\">слово</a>. Не вставляй голые ссылки.\n"+
 			"5. Если новость не содержит важной информации (реклама, анонсы, самопиар) — пропусти её.\n"+
 			"6. Используй только русский язык. Никаких вступлений и заключений — только чистый дайджест.\n\n"+
+			"Список каналов и их эмодзи:\n%s\n"+
 			"Формат вывода:\n"+
 			"<b>Дайджест за %s</b>\n\n"+
 			"<b>эмодзи ТЕМА</b>\n"+
-			"- 🔹 @channel: Текст новости с <a href=\"url\">ссылкой</a>.\n"+
+			"- [эмодзи канала] @channel: Текст новости с <a href=\"url\">ссылкой</a>.\n"+
 			"- ...\n\n"+
 			"Материалы для обработки:\n%s",
-		date, date, sb.String(),
+		date, legendSB.String(), date, sb.String(),
 	)
 
 	resp, err := g.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{

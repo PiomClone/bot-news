@@ -328,7 +328,8 @@ func (a *app) latestText(ctx context.Context) string {
 				if source == "" {
 					source = sourceLabel(article.FeedURL)
 				}
-				fmt.Fprintf(&sb, "\n<b>%s</b>\n", html.EscapeString(source))
+				emoji := summarizer.GetEmoji(article.FeedURL)
+				fmt.Fprintf(&sb, "\n%s <b>%s</b>\n", emoji, html.EscapeString(source))
 			}
 			fmt.Fprintf(&sb, "- %s\n  %s\n", html.EscapeString(article.Title), html.EscapeString(article.Link))
 		}

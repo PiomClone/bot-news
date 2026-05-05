@@ -34,6 +34,22 @@ func sourceLabel(feedURL string) string {
 	return feedURL
 }
 
+var emojis = []string{
+	"💰", "🚀", "🏠", "📡", "🎬", "🎨", "🎮", "🎹", "🚜", "⚓",
+	"🛡️", "🧬", "🧪", "🔭", "🔬", "🛰️", "🛸", "🧶", "🧵", "🔮",
+}
+
+func GetEmoji(feedURL string) string {
+	if feedURL == "" {
+		return "🔹"
+	}
+	var sum int
+	for _, b := range []byte(feedURL) {
+		sum += int(b)
+	}
+	return emojis[sum%len(emojis)]
+}
+
 // SimpleSummarizer — форматирует статьи как Markdown-список без AI.
 type SimpleSummarizer struct{}
 
@@ -55,8 +71,9 @@ func (s *SimpleSummarizer) Summarize(_ context.Context, articles []storage.Artic
 		if source == "" {
 			source = sourceLabel(a.FeedURL)
 		}
+		emoji := GetEmoji(a.FeedURL)
 		title := html.EscapeString(a.Title)
-		fmt.Fprintf(&sb, "<b>%s</b> · %s\n", html.EscapeString(source), title)
+		fmt.Fprintf(&sb, "%s <b>%s</b> · %s\n", emoji, html.EscapeString(source), title)
 		if a.Description != "" {
 			desc := strings.TrimSpace(a.Description)
 			desc = html.EscapeString(desc)
