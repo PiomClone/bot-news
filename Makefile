@@ -1,4 +1,4 @@
-.PHONY: help build test lint lint-fix format run dev clean install-tools digest-now check-deps
+.PHONY: help build test lint lint-fix format run dev clean install-tools digest-now check-deps deploy-h2
 
 APP      := bot-news
 BUILD_DIR := build
@@ -54,6 +54,9 @@ dev: ## Запуск с автоперезагрузкой (air)
 
 digest-now: ## Немедленно сформировать и отправить дайджест
 	@go run $(MAIN_PATH) --run-digest-now
+
+deploy-h2: ## Собрать локально и задеплоить на h2
+	@bash deploy/deploy-remote.sh h2
 
 check-deps: ## Проверить зависимости
 	@go mod verify
