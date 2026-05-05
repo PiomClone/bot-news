@@ -38,7 +38,7 @@ func NewTelegram(token, channelID string) (*Telegram, error) {
 
 func (t *Telegram) Send(ctx context.Context, text string) error {
 	opts := &telebot.SendOptions{
-		ParseMode:             telebot.ModeMarkdown,
+		ParseMode:             telebot.ModeHTML,
 		DisableWebPagePreview: true,
 	}
 	for _, chunk := range splitMessage(text, maxMessageLen) {
@@ -115,33 +115,38 @@ func (t *Telegram) ListenCommands(ctx context.Context, adminID int64, onFetch, o
 		return fmt.Sprintf("⏳ Формирую дайджест из %d статей за сегодня...", n)
 	}
 
+	opts := &telebot.SendOptions{
+		ParseMode:             telebot.ModeHTML,
+		DisableWebPagePreview: true,
+	}
+
 	t.bot.Handle("/fetch", func(c telebot.Context) error {
 		slog.Info("получена команда Telegram", "command", "fetch", "sender_id", senderID(c))
 		if !allowed(c) {
 			return nil
 		}
-		return c.Reply(doFetch())
+		return c.Reply(doFetch(), opts)
 	})
 	t.bot.Handle("/digest", func(c telebot.Context) error {
 		slog.Info("получена команда Telegram", "command", "digest", "sender_id", senderID(c))
 		if !allowed(c) {
 			return nil
 		}
-		return c.Reply(doDigest())
+		return c.Reply(doDigest(), opts)
 	})
 	t.bot.Handle("/stats", func(c telebot.Context) error {
 		slog.Info("получена команда Telegram", "command", "stats", "sender_id", senderID(c))
 		if !allowed(c) {
 			return nil
 		}
-		return c.Reply(onStats(), keyboard)
+		return c.Reply(onStats(), keyboard, opts)
 	})
 	t.bot.Handle("/latest", func(c telebot.Context) error {
 		slog.Info("получена команда Telegram", "command", "latest", "sender_id", senderID(c))
 		if !allowed(c) {
 			return nil
 		}
-		return c.Reply(onLatest(), keyboard)
+		return c.Reply(onLatest(), keyboard, opts)
 	})
 	t.bot.Handle(&btnFetch, func(c telebot.Context) error {
 		slog.Info("получен callback Telegram", "callback", "fetch", "sender_id", senderID(c))

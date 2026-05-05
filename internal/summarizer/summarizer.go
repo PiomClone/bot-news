@@ -3,6 +3,7 @@ package summarizer
 import (
 	"context"
 	"fmt"
+	"html"
 	"net/url"
 	"strings"
 	"time"
@@ -47,15 +48,14 @@ func (s *SimpleSummarizer) Summarize(_ context.Context, articles []storage.Artic
 
 	var sb strings.Builder
 	date := time.Now().Format("2 January 2006")
-	fmt.Fprintf(&sb, "*Дайджест за %s*\n\n", date)
+	fmt.Fprintf(&sb, "<b>Дайджест за %s</b>\n\n", date)
 
 	for _, a := range articles {
-		title := strings.ReplaceAll(a.Title, "[", "\\[")
-		title = strings.ReplaceAll(title, "]", "\\]")
-		fmt.Fprintf(&sb, "*%s* · %s\n", sourceLabel(a.FeedURL), title)
+		title := html.EscapeString(a.Title)
+		fmt.Fprintf(&sb, "<b>%s</b> · %s\n", html.EscapeString(sourceLabel(a.FeedURL)), title)
 		if a.Description != "" {
 			desc := strings.TrimSpace(a.Description)
-			// обрезаем до 200 символов чтобы не раздувать сообщение
+			desc = html.EscapeString(desc)
 			runes := []rune(desc)
 			if len(runes) > 200 {
 				desc = string(runes[:200]) + "..."

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"html"
 	"log/slog"
 	"net/http"
 	"os"
@@ -284,7 +285,7 @@ func (a *app) statsText(ctx context.Context) string {
 	}
 
 	res := fmt.Sprintf(
-		"📊 *Статистика*\n\n"+
+		"📊 <b>Статистика</b>\n\n"+
 			"📥 Всего собрано: %d\n"+
 			"✅ Отправлено: %d\n"+
 			"📬 Не отправлено: %d\n"+
@@ -318,19 +319,19 @@ func (a *app) latestText(ctx context.Context) string {
 		slog.Warn("ошибка AI для latest, откат к простому списку", "error", err)
 		// Если AI подвел, выводим просто список
 		var sb strings.Builder
-		sb.WriteString("📰 Последние материалы (AI временно недоступен)\n")
+		sb.WriteString("📰 <b>Последние материалы (AI временно недоступен)</b>\n")
 		var currentFeed string
 		for _, article := range articles {
 			if article.FeedURL != currentFeed {
 				currentFeed = article.FeedURL
-				fmt.Fprintf(&sb, "\n%s\n", sourceLabel(article.FeedURL))
+				fmt.Fprintf(&sb, "\n<b>%s</b>\n", html.EscapeString(sourceLabel(article.FeedURL)))
 			}
-			fmt.Fprintf(&sb, "- %s\n  %s\n", article.Title, article.Link)
+			fmt.Fprintf(&sb, "- %s\n  %s\n", html.EscapeString(article.Title), html.EscapeString(article.Link))
 		}
 		return sb.String()
 	}
 
-	return "🆕 *Свежий обзор последних новостей (по 3 с каждого канала):*\n\n" + text
+	return "🆕 <b>Свежий обзор последних новостей (по 3 с каждого канала):</b>\n\n" + text
 }
 
 func sourceLabel(feedURL string) string {
