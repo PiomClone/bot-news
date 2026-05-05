@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -110,8 +111,8 @@ func (s *DB) GetUnsent(ctx context.Context, since time.Time) ([]Article, error) 
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, feed_url, guid, title, link, description, published_at, fetched_at
 		FROM articles
-		WHERE sent = 0 AND fetched_at >= ?
-		ORDER BY fetched_at ASC
+		WHERE sent = 0 AND COALESCE(published_at, fetched_at) >= ?
+		ORDER BY COALESCE(published_at, fetched_at) ASC
 	`, since.Unix())
 	if err != nil {
 		return nil, err
@@ -137,26 +138,51 @@ func (s *DB) GetUnsent(ctx context.Context, since time.Time) ([]Article, error) 
 	return articles, rows.Err()
 }
 
+func (s *DB) GetUnsentCount(ctx context.Context, since time.Time) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM articles WHERE sent = 0 AND COALESCE(published_at, fetched_at) >= ?`,
+		since.Unix(),
+	).Scan(&count)
+	return count, err
+}
+
+type Stats struct {
+	TotalArticles int64
+	SentArticles  int64
+	LastFetchedAt time.Time
+}
+
+func (s *DB) GetStats(ctx context.Context) (Stats, error) {
+	var st Stats
+	var lastFetch *int64
+	err := s.db.QueryRowContext(ctx, `
+		SELECT
+			COUNT(*),
+			COALESCE(SUM(sent), 0),
+			MAX(fetched_at)
+		FROM articles
+	`).Scan(&st.TotalArticles, &st.SentArticles, &lastFetch)
+	if err != nil {
+		return st, err
+	}
+	if lastFetch != nil {
+		st.LastFetchedAt = time.Unix(*lastFetch, 0)
+	}
+	return st, nil
+}
+
 func (s *DB) MarkSent(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
+	placeholders := make([]string, len(ids))
+	args := make([]any, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
 	}
-	defer tx.Rollback()
-
-	stmt, err := tx.PrepareContext(ctx, `UPDATE articles SET sent = 1 WHERE id = ?`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	for _, id := range ids {
-		if _, err := stmt.ExecContext(ctx, id); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
+	query := "UPDATE articles SET sent = 1 WHERE id IN (" + strings.Join(placeholders, ",") + ")"
+	_, err := s.db.ExecContext(ctx, query, args...)
+	return err
 }

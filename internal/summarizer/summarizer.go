@@ -33,11 +33,20 @@ func (s *SimpleSummarizer) Summarize(_ context.Context, articles []storage.Artic
 	for _, a := range articles {
 		title := strings.ReplaceAll(a.Title, "[", "\\[")
 		title = strings.ReplaceAll(title, "]", "\\]")
-		if a.Link != "" {
-			fmt.Fprintf(&sb, "• [%s](%s)\n", title, a.Link)
-		} else {
-			fmt.Fprintf(&sb, "• %s\n", title)
+		fmt.Fprintf(&sb, "*%s*\n", title)
+		if a.Description != "" {
+			desc := strings.TrimSpace(a.Description)
+			// обрезаем до 200 символов чтобы не раздувать сообщение
+			runes := []rune(desc)
+			if len(runes) > 200 {
+				desc = string(runes[:200]) + "..."
+			}
+			fmt.Fprintf(&sb, "%s\n", desc)
 		}
+		if a.Link != "" {
+			fmt.Fprintf(&sb, "🔗 %s\n", a.Link)
+		}
+		fmt.Fprintln(&sb)
 	}
 
 	fmt.Fprintf(&sb, "\nВсего: %d материалов", len(articles))

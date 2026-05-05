@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -21,6 +22,9 @@ import (
 	"bot-news/internal/storage"
 	"bot-news/internal/summarizer"
 )
+
+const timeFmt = "02 Jan 15:04 MST"
+const digestLookback = 12 * time.Hour
 
 type app struct {
 	cfg     config.Config
@@ -104,6 +108,23 @@ func (a *app) run() {
 		a.runHealthServer(ctx)
 	}()
 
+	// Telegram-команды
+	if a.cfg.TelegramAdminID != 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			a.notif.ListenCommands(ctx, a.cfg.TelegramAdminID,
+				func() { a.fetch(ctx) },
+				func() { a.digest(ctx) },
+				func() string { return a.statsText(ctx) },
+				func() int {
+					n, _ := a.db.GetUnsentCount(ctx, a.digestSince())
+					return n
+				},
+			)
+		}()
+	}
+
 	// Cron-планировщик
 	c := cron.New()
 	fetchSpec := fmt.Sprintf("@every %dm", a.cfg.FetchIntervalMin)
@@ -143,12 +164,43 @@ func (a *app) run() {
 	slog.Info("бот остановлен")
 }
 
+func (a *app) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if a.cfg.TriggerSecret != "" {
+			token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+			if token != a.cfg.TriggerSecret {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+		}
+		next(w, r)
+	}
+}
+
 func (a *app) runHealthServer(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
 	})
+	mux.HandleFunc("/trigger/fetch", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		go a.fetch(ctx)
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(w, "fetch triggered")
+	}))
+	mux.HandleFunc("/trigger/digest", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		go a.digest(ctx)
+		w.WriteHeader(http.StatusAccepted)
+		fmt.Fprint(w, "digest triggered")
+	}))
 
 	srv := &http.Server{
 		Addr:         a.cfg.HealthAddr,
@@ -183,8 +235,63 @@ func (a *app) fetch(ctx context.Context) {
 	slog.Info("статьи получены и сохранены", "count", len(articles))
 }
 
+func (a *app) loc() *time.Location {
+	loc, err := time.LoadLocation(a.cfg.Timezone)
+	if err != nil {
+		return time.UTC
+	}
+	return loc
+}
+
+func (a *app) digestSince() time.Time {
+	return time.Now().Add(-digestLookback)
+}
+
+func (a *app) statsFooter(ctx context.Context, digestCount int) string {
+	stats, err := a.db.GetStats(ctx)
+	if err != nil {
+		return ""
+	}
+	lastFetch := "нет данных"
+	if !stats.LastFetchedAt.IsZero() {
+		lastFetch = stats.LastFetchedAt.In(a.loc()).Format(timeFmt)
+	}
+	if digestCount > 0 {
+		return fmt.Sprintf(
+			"\n\n—\n📥 В дайджесте: %d | Всего собрано: %d | Отправлено: %d\n🕐 Последний сбор: %s",
+			digestCount, stats.TotalArticles, stats.SentArticles, lastFetch,
+		)
+	}
+	return fmt.Sprintf(
+		"\n\n—\n📥 Всего собрано: %d | Отправлено: %d\n🕐 Последний сбор: %s",
+		stats.TotalArticles, stats.SentArticles, lastFetch,
+	)
+}
+
+func (a *app) statsText(ctx context.Context) string {
+	stats, err := a.db.GetStats(ctx)
+	if err != nil {
+		return "ошибка получения статистики"
+	}
+	lastFetch := "нет данных"
+	if !stats.LastFetchedAt.IsZero() {
+		lastFetch = stats.LastFetchedAt.In(a.loc()).Format(timeFmt)
+	}
+	return fmt.Sprintf(
+		"📊 Статистика\n\n"+
+			"📥 Всего собрано: %d\n"+
+			"✅ Отправлено: %d\n"+
+			"📬 Не отправлено: %d\n"+
+			"🕐 Последний сбор: %s",
+		stats.TotalArticles,
+		stats.SentArticles,
+		stats.TotalArticles-stats.SentArticles,
+		lastFetch,
+	)
+}
+
 func (a *app) digest(ctx context.Context) {
-	since := time.Now().AddDate(0, 0, -1)
+	since := a.digestSince()
 
 	articles, err := a.db.GetUnsent(ctx, since)
 	if err != nil {
@@ -195,6 +302,7 @@ func (a *app) digest(ctx context.Context) {
 		slog.Info("нет новых статей для дайджеста, отправляем heartbeat")
 		heartbeat := fmt.Sprintf("✅ Дайджест за %s: новых материалов нет. Система работает.",
 			time.Now().Format("2 January 2006"))
+		heartbeat += a.statsFooter(ctx, 0)
 		if err := a.notif.Send(ctx, heartbeat); err != nil {
 			slog.Error("ошибка отправки heartbeat", "error", err)
 		}
@@ -204,9 +312,15 @@ func (a *app) digest(ctx context.Context) {
 
 	text, err := a.sum.Summarize(ctx, articles)
 	if err != nil {
-		slog.Error("ошибка саммаризации", "error", err)
-		return
+		slog.Warn("ошибка саммаризации, использую простой дайджест", "error", err)
+		text, err = summarizer.NewSimple().Summarize(ctx, articles)
+		if err != nil {
+			slog.Error("ошибка fallback саммаризации", "error", err)
+			return
+		}
 	}
+	text += a.statsFooter(ctx, len(articles))
+
 	if err := a.notif.Send(ctx, text); err != nil {
 		slog.Error("ошибка отправки в Telegram", "error", err)
 		return

@@ -17,14 +17,20 @@ func TestLoadFromEnv_Defaults(t *testing.T) {
 	os.Unsetenv("DB_PATH")
 	os.Unsetenv("GROQ_MODEL")
 	os.Unsetenv("HEALTH_ADDR")
+	os.Unsetenv("TIMEZONE")
+	os.Unsetenv("TELEGRAM_ADMIN_ID")
+	os.Unsetenv("TRIGGER_SECRET")
 
 	cfg := config.LoadFromEnv()
 
 	if cfg.FetchIntervalMin != 30 {
 		t.Errorf("FetchIntervalMin: ожидали 30, получили %d", cfg.FetchIntervalMin)
 	}
-	if cfg.DigestCron != "0 9 * * *" {
-		t.Errorf("DigestCron: ожидали '0 9 * * *', получили %q", cfg.DigestCron)
+	if cfg.DigestCron != "CRON_TZ=Europe/Moscow 0 9,21 * * *" {
+		t.Errorf("DigestCron: ожидали 'CRON_TZ=Europe/Moscow 0 9,21 * * *', получили %q", cfg.DigestCron)
+	}
+	if cfg.Timezone != "Europe/Moscow" {
+		t.Errorf("Timezone: ожидали 'Europe/Moscow', получили %q", cfg.Timezone)
 	}
 	if cfg.DBPath != "bot-news.db" {
 		t.Errorf("DBPath: ожидали 'bot-news.db', получили %q", cfg.DBPath)

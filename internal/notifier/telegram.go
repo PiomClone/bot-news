@@ -3,8 +3,10 @@ package notifier
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
+	"time"
 
 	telebot "gopkg.in/telebot.v3"
 
@@ -20,7 +22,10 @@ type Telegram struct {
 }
 
 func NewTelegram(token, channelID string) (*Telegram, error) {
-	b, err := telebot.NewBot(telebot.Settings{Token: token})
+	b, err := telebot.NewBot(telebot.Settings{
+		Token:  token,
+		Poller: &telebot.LongPoller{Timeout: 10 * time.Second},
+	})
 	if err != nil {
 		return nil, fmt.Errorf("telegram: %w", err)
 	}
@@ -68,6 +73,77 @@ func (r usernameRecipient) Recipient() string { return string(r) }
 type numericRecipient int64
 
 func (r numericRecipient) Recipient() string { return strconv.FormatInt(int64(r), 10) }
+
+// ListenCommands запускает polling и обрабатывает команды /fetch, /digest, /stats.
+// Реагирует только на сообщения от adminID (если задан).
+func (t *Telegram) ListenCommands(ctx context.Context, adminID int64, onFetch, onDigest func(), onStats func() string, onDigestCount func() int) {
+	allowed := func(c telebot.Context) bool {
+		return adminID == 0 || c.Sender().ID == adminID
+	}
+
+	btnFetch := telebot.Btn{Unique: "cb_fetch", Text: "🔄 Собрать статьи"}
+	btnDigest := telebot.Btn{Unique: "cb_digest", Text: "📨 Запустить дайджест"}
+	keyboard := &telebot.ReplyMarkup{}
+	keyboard.Inline(keyboard.Row(btnFetch, btnDigest))
+
+	doFetch := func() string {
+		go onFetch()
+		return "⏳ Сбор статей запущен..."
+	}
+	doDigest := func() string {
+		n := onDigestCount()
+		if n == 0 {
+			return "📭 Новых статей за сегодня нет"
+		}
+		go onDigest()
+		return fmt.Sprintf("⏳ Формирую дайджест из %d статей за сегодня...", n)
+	}
+
+	t.bot.Handle("/fetch", func(c telebot.Context) error {
+		if !allowed(c) {
+			return nil
+		}
+		return c.Reply(doFetch())
+	})
+	t.bot.Handle("/digest", func(c telebot.Context) error {
+		if !allowed(c) {
+			return nil
+		}
+		return c.Reply(doDigest())
+	})
+	t.bot.Handle("/stats", func(c telebot.Context) error {
+		if !allowed(c) {
+			return nil
+		}
+		return c.Reply(onStats(), keyboard)
+	})
+	t.bot.Handle(&btnFetch, func(c telebot.Context) error {
+		if !allowed(c) {
+			return c.Respond()
+		}
+		return c.Respond(&telebot.CallbackResponse{Text: doFetch()})
+	})
+	t.bot.Handle(&btnDigest, func(c telebot.Context) error {
+		if !allowed(c) {
+			return c.Respond()
+		}
+		return c.Respond(&telebot.CallbackResponse{Text: doDigest()})
+	})
+
+	if err := t.bot.SetCommands([]telebot.Command{
+		{Text: "digest", Description: "Сформировать и отправить дайджест"},
+		{Text: "fetch", Description: "Собрать свежие статьи"},
+		{Text: "stats", Description: "Статистика сбора"},
+	}); err != nil {
+		slog.Warn("не удалось установить команды бота", "error", err)
+	}
+
+	go t.bot.Start()
+	slog.Info("бот слушает команды")
+
+	<-ctx.Done()
+	t.bot.Stop()
+}
 
 // splitMessage делит текст на части не длиннее maxLen рун,
 // по возможности разрезая по переносу строки.

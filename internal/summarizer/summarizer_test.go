@@ -10,50 +10,84 @@ import (
 	"bot-news/internal/summarizer"
 )
 
-func TestSimpleSummarizer_Empty(t *testing.T) {
+const unexpectedErr = "неожиданная ошибка: %v"
+
+func makeArticle(title, link, desc string) storage.Article {
+	return storage.Article{Title: title, Link: link, Description: desc, FetchedAt: time.Now()}
+}
+
+func TestSimpleSummarizerEmpty(t *testing.T) {
 	s := summarizer.NewSimple()
 	text, err := s.Summarize(context.Background(), nil)
 	if err != nil {
-		t.Fatalf("неожиданная ошибка: %v", err)
+		t.Fatalf(unexpectedErr, err)
 	}
 	if text != "" {
 		t.Fatalf("ожидали пустую строку для пустого списка, получили %q", text)
 	}
 }
 
-func TestSimpleSummarizer_ContainsTitlesAndLinks(t *testing.T) {
+func TestSimpleSummarizerContainsTitlesAndLinks(t *testing.T) {
 	s := summarizer.NewSimple()
 	articles := []storage.Article{
-		{Title: "Заголовок первый", Link: "https://example.com/1", FetchedAt: time.Now()},
-		{Title: "Заголовок второй", Link: "https://example.com/2", FetchedAt: time.Now()},
+		makeArticle("Заголовок первый", "https://example.com/1", "Описание первого"),
+		makeArticle("Заголовок второй", "https://example.com/2", ""),
 	}
 
 	text, err := s.Summarize(context.Background(), articles)
 	if err != nil {
-		t.Fatalf("неожиданная ошибка: %v", err)
+		t.Fatalf(unexpectedErr, err)
 	}
-	if !strings.Contains(text, "Заголовок первый") {
-		t.Errorf("текст не содержит первый заголовок: %s", text)
-	}
-	if !strings.Contains(text, "https://example.com/2") {
-		t.Errorf("текст не содержит вторую ссылку: %s", text)
-	}
-	if !strings.Contains(text, "2") {
-		t.Errorf("текст не содержит количество статей: %s", text)
+	for _, want := range []string{"Заголовок первый", "Заголовок второй", "https://example.com/1", "Описание первого"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("текст не содержит %q:\n%s", want, text)
+		}
 	}
 }
 
-func TestSimpleSummarizer_ArticleWithoutLink(t *testing.T) {
+func TestSimpleSummarizerWithoutLink(t *testing.T) {
 	s := summarizer.NewSimple()
-	articles := []storage.Article{
-		{Title: "Статья без ссылки", FetchedAt: time.Now()},
-	}
-
-	text, err := s.Summarize(context.Background(), articles)
+	text, err := s.Summarize(context.Background(), []storage.Article{
+		makeArticle("Статья без ссылки", "", ""),
+	})
 	if err != nil {
-		t.Fatalf("неожиданная ошибка: %v", err)
+		t.Fatalf(unexpectedErr, err)
 	}
 	if !strings.Contains(text, "Статья без ссылки") {
 		t.Errorf("текст не содержит заголовок: %s", text)
+	}
+	if strings.Contains(text, "🔗") {
+		t.Errorf("не должно быть 🔗 без ссылки: %s", text)
+	}
+}
+
+func TestSimpleSummarizerDescriptionTruncated(t *testing.T) {
+	s := summarizer.NewSimple()
+	longDesc := strings.Repeat("а", 300)
+	text, err := s.Summarize(context.Background(), []storage.Article{
+		makeArticle("Заголовок", "https://example.com", longDesc),
+	})
+	if err != nil {
+		t.Fatalf(unexpectedErr, err)
+	}
+	// Описание должно быть обрезано до 200 + "..."
+	if strings.Contains(text, longDesc) {
+		t.Error("длинное описание не было обрезано")
+	}
+	if !strings.Contains(text, "...") {
+		t.Error("обрезанное описание должно заканчиваться на '...'")
+	}
+}
+
+func TestSimpleSummarizerHeader(t *testing.T) {
+	s := summarizer.NewSimple()
+	text, err := s.Summarize(context.Background(), []storage.Article{
+		makeArticle("А", "https://a.com", ""),
+	})
+	if err != nil {
+		t.Fatalf(unexpectedErr, err)
+	}
+	if !strings.Contains(text, "Дайджест") {
+		t.Errorf("нет заголовка дайджеста: %s", text)
 	}
 }

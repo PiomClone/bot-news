@@ -8,6 +8,13 @@ import (
 	"bot-news/internal/storage"
 )
 
+const (
+	testFeedURL = "http://feed"
+	testFeedF   = "http://f"
+	testLinkA   = "http://a"
+	testLinkB   = "http://b"
+)
+
 func newTestDB(t *testing.T) *storage.DB {
 	t.Helper()
 	db, err := storage.NewDB(":memory:")
@@ -18,21 +25,24 @@ func newTestDB(t *testing.T) *storage.DB {
 	return db
 }
 
+func mustSave(t *testing.T, db *storage.DB, articles []storage.Article) {
+	t.Helper()
+	if err := db.SaveArticles(context.Background(), articles); err != nil {
+		t.Fatalf("SaveArticles: %v", err)
+	}
+}
+
 func TestSaveArticles_Deduplication(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 
-	articles := []storage.Article{
-		{FeedURL: "http://feed.example", GUID: "guid-1", Title: "Статья 1", Link: "http://link/1", FetchedAt: time.Now()},
-		{FeedURL: "http://feed.example", GUID: "guid-1", Title: "Статья 1 дубль", Link: "http://link/1", FetchedAt: time.Now()},
-	}
+	now := time.Now()
+	mustSave(t, db, []storage.Article{
+		{FeedURL: testFeedURL, GUID: "guid-1", Title: "Статья 1", Link: "http://link/1", FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedURL, GUID: "guid-1", Title: "Статья 1 дубль", Link: "http://link/1", FetchedAt: now, PublishedAt: now},
+	})
 
-	if err := db.SaveArticles(ctx, articles); err != nil {
-		t.Fatalf("SaveArticles: %v", err)
-	}
-
-	// Дубль не должен сохраниться
-	since := time.Now().AddDate(0, 0, -1)
+	since := now.AddDate(0, 0, -1)
 	saved, err := db.GetUnsent(ctx, since)
 	if err != nil {
 		t.Fatalf("GetUnsent: %v", err)
@@ -49,32 +59,23 @@ func TestMarkSent(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 
-	articles := []storage.Article{
-		{FeedURL: "http://feed.example", GUID: "guid-a", Title: "А", Link: "http://a", FetchedAt: time.Now()},
-		{FeedURL: "http://feed.example", GUID: "guid-b", Title: "Б", Link: "http://b", FetchedAt: time.Now()},
-	}
-	if err := db.SaveArticles(ctx, articles); err != nil {
-		t.Fatalf("SaveArticles: %v", err)
-	}
+	now := time.Now()
+	mustSave(t, db, []storage.Article{
+		{FeedURL: testFeedURL, GUID: "guid-a", Title: "А", Link: testLinkA, FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedURL, GUID: "guid-b", Title: "Б", Link: testLinkB, FetchedAt: now, PublishedAt: now},
+	})
 
-	since := time.Now().AddDate(0, 0, -1)
-	saved, err := db.GetUnsent(ctx, since)
-	if err != nil {
-		t.Fatalf("GetUnsent: %v", err)
-	}
+	since := now.AddDate(0, 0, -1)
+	saved, _ := db.GetUnsent(ctx, since)
 	if len(saved) != 2 {
 		t.Fatalf("ожидали 2 статьи, получили %d", len(saved))
 	}
 
-	ids := []int64{saved[0].ID}
-	if err := db.MarkSent(ctx, ids); err != nil {
+	if err := db.MarkSent(ctx, []int64{saved[0].ID}); err != nil {
 		t.Fatalf("MarkSent: %v", err)
 	}
 
-	unsent, err := db.GetUnsent(ctx, since)
-	if err != nil {
-		t.Fatalf("GetUnsent после MarkSent: %v", err)
-	}
+	unsent, _ := db.GetUnsent(ctx, since)
 	if len(unsent) != 1 {
 		t.Fatalf("ожидали 1 неотправленную, получили %d", len(unsent))
 	}
@@ -82,31 +83,115 @@ func TestMarkSent(t *testing.T) {
 
 func TestGetUnsent_SinceFilter(t *testing.T) {
 	db := newTestDB(t)
-	ctx := context.Background()
 
-	old := time.Now().AddDate(0, 0, -3)
-	articles := []storage.Article{
-		{FeedURL: "http://f", GUID: "old-1", Title: "Старая", Link: "http://old", FetchedAt: old},
-	}
-	if err := db.SaveArticles(ctx, articles); err != nil {
-		t.Fatalf("SaveArticles: %v", err)
-	}
+	now := time.Now()
+	old := now.AddDate(0, 0, -3)
 
-	// Запрашиваем только за последние сутки — старая не должна попасть
-	since := time.Now().AddDate(0, 0, -1)
-	unsent, err := db.GetUnsent(ctx, since)
+	// Старая статья — с published_at 3 дня назад
+	mustSave(t, db, []storage.Article{
+		{FeedURL: testFeedF, GUID: "old-1", Title: "Старая", Link: "http://old", FetchedAt: old, PublishedAt: old},
+	})
+	// Новая статья — сегодня
+	mustSave(t, db, []storage.Article{
+		{FeedURL: testFeedF, GUID: "new-1", Title: "Новая", Link: "http://new", FetchedAt: now, PublishedAt: now},
+	})
+
+	since := now.AddDate(0, 0, -1)
+	unsent, err := db.GetUnsent(context.Background(), since)
 	if err != nil {
 		t.Fatalf("GetUnsent: %v", err)
 	}
-	if len(unsent) != 0 {
-		t.Fatalf("ожидали 0 статей (старее since), получили %d", len(unsent))
+	if len(unsent) != 1 {
+		t.Fatalf("ожидали 1 статью (только новая), получили %d", len(unsent))
+	}
+	if unsent[0].GUID != "new-1" {
+		t.Errorf("ожидали new-1, получили %q", unsent[0].GUID)
+	}
+}
+
+func TestGetUnsentNullPublishedAt(t *testing.T) {
+	db := newTestDB(t)
+
+	now := time.Now()
+	// Статья без published_at — должна попасть по fetched_at
+	mustSave(t, db, []storage.Article{
+		{FeedURL: testFeedF, GUID: "no-pub", Title: "Без даты", Link: "http://x", FetchedAt: now},
+	})
+
+	since := now.AddDate(0, 0, -1)
+	unsent, err := db.GetUnsent(context.Background(), since)
+	if err != nil {
+		t.Fatalf("GetUnsent: %v", err)
+	}
+	if len(unsent) != 1 {
+		t.Fatalf("ожидали 1 статью (fallback на fetched_at), получили %d", len(unsent))
 	}
 }
 
 func TestMarkSent_Empty(t *testing.T) {
 	db := newTestDB(t)
-	// Не должен падать на пустом списке
 	if err := db.MarkSent(context.Background(), nil); err != nil {
 		t.Fatalf("MarkSent(nil): %v", err)
+	}
+}
+
+func TestGetStats(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	// Пустая БД
+	stats, err := db.GetStats(ctx)
+	if err != nil {
+		t.Fatalf("GetStats (пустая БД): %v", err)
+	}
+	if stats.TotalArticles != 0 || stats.SentArticles != 0 {
+		t.Errorf("ожидали 0/0, получили %d/%d", stats.TotalArticles, stats.SentArticles)
+	}
+
+	now := time.Now()
+	mustSave(t, db, []storage.Article{
+		{FeedURL: testFeedF, GUID: "g1", Title: "A", Link: testLinkA, FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedF, GUID: "g2", Title: "B", Link: testLinkB, FetchedAt: now, PublishedAt: now},
+	})
+
+	since := now.AddDate(0, 0, -1)
+	saved, _ := db.GetUnsent(ctx, since)
+	db.MarkSent(ctx, []int64{saved[0].ID})
+
+	stats, err = db.GetStats(ctx)
+	if err != nil {
+		t.Fatalf("GetStats: %v", err)
+	}
+	if stats.TotalArticles != 2 {
+		t.Errorf("TotalArticles: ожидали 2, получили %d", stats.TotalArticles)
+	}
+	if stats.SentArticles != 1 {
+		t.Errorf("SentArticles: ожидали 1, получили %d", stats.SentArticles)
+	}
+	if stats.LastFetchedAt.IsZero() {
+		t.Error("LastFetchedAt не должен быть zero")
+	}
+}
+
+func TestGetUnsentCount(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	now := time.Now()
+	mustSave(t, db, []storage.Article{
+		{FeedURL: testFeedF, GUID: "g1", Title: "A", Link: testLinkA, FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedF, GUID: "g2", Title: "B", Link: testLinkB, FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedF, GUID: "g-no-pub", Title: "No pub", Link: "http://no-pub", FetchedAt: now},
+		{FeedURL: testFeedF, GUID: "g3", Title: "C", Link: "http://c",
+			FetchedAt: now.AddDate(0, 0, -3), PublishedAt: now.AddDate(0, 0, -3)},
+	})
+
+	since := now.AddDate(0, 0, -1)
+	count, err := db.GetUnsentCount(ctx, since)
+	if err != nil {
+		t.Fatalf("GetUnsentCount: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("ожидали 3 (старая не считается, статья без published_at считается по fetched_at), получили %d", count)
 	}
 }

@@ -1,12 +1,12 @@
 # bot-news
 
-Telegram-бот на Go, который собирает RSS-ленты, раз в день делает AI-дайджест через Groq API и отправляет в канал.
+Telegram-бот на Go, который собирает RSS-ленты, два раза в день делает AI-дайджест через Groq API и отправляет в канал.
 
 ## Как работает
 
 ```
 [cron каждые 30 мин]  → собирает статьи из RSS → сохраняет в SQLite (без дублей)
-[cron 09:00 каждый день] → берёт несохранённые статьи → делает саммари → отправляет в Telegram
+[cron 09:00 и 21:00] → берёт несохранённые статьи за 12 часов → делает саммари → отправляет в Telegram
 ```
 
 ## Быстрый старт (локально)
@@ -44,11 +44,14 @@ make digest-now
 | `TELEGRAM_CHANNEL_ID` | — | `@username` или числовой ID канала |
 | `FEED_URLS` | — | RSS-ленты через запятую |
 | `FETCH_INTERVAL_MINUTES` | `30` | Как часто собирать статьи |
-| `DIGEST_CRON` | `0 9 * * *` | Когда отправлять дайджест (cron) |
+| `DIGEST_CRON` | `CRON_TZ=Europe/Moscow 0 9,21 * * *` | Когда отправлять дайджест (cron) |
 | `DB_PATH` | `bot-news.db` | Путь к файлу SQLite |
 | `GROQ_API_KEY` | — | Если пусто — простой список без AI |
 | `GROQ_MODEL` | `llama-3.3-70b-versatile` | Модель Groq (1000 req/day бесплатно) |
 | `HEALTH_ADDR` | `:8080` | Адрес HTTP health check |
+| `TRIGGER_SECRET` | — | Bearer-токен для `/trigger/*` |
+| `TELEGRAM_ADMIN_ID` | — | ID пользователя, которому разрешены команды боту |
+| `TIMEZONE` | `Europe/Moscow` | Часовой пояс для дат и статистики |
 | `LOG_LEVEL` | `info` | Уровень логов (debug/info/warn/error) |
 
 ## Деплой через Docker Compose

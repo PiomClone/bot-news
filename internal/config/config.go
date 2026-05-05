@@ -17,17 +17,25 @@ type Config struct {
 	GroqAPIKey        string
 	GroqModel         string
 	HealthAddr        string // HTTP-адрес для /health, например ":8080"
+	TriggerSecret     string // Bearer-токен для /trigger/* (опционально)
+	TelegramAdminID   int64  // ID пользователя, которому разрешены команды боту
+	Timezone          string // часовой пояс для дайджеста, например "Europe/Moscow"
 }
 
 func LoadFromEnv() Config {
 	cfg := Config{
 		TelegramBotToken:  os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramChannelID: os.Getenv("TELEGRAM_CHANNEL_ID"),
-		DigestCron:        getEnvOrDefault("DIGEST_CRON", "0 9 * * *"),
+		DigestCron:        getEnvOrDefault("DIGEST_CRON", "CRON_TZ=Europe/Moscow 0 9,21 * * *"),
 		DBPath:            getEnvOrDefault("DB_PATH", "bot-news.db"),
 		GroqAPIKey:        os.Getenv("GROQ_API_KEY"),
 		GroqModel:         getEnvOrDefault("GROQ_MODEL", "llama-3.3-70b-versatile"),
 		HealthAddr:        getEnvOrDefault("HEALTH_ADDR", ":8080"),
+		TriggerSecret:     os.Getenv("TRIGGER_SECRET"),
+		Timezone:          getEnvOrDefault("TIMEZONE", "Europe/Moscow"),
+	}
+	if v, err := strconv.ParseInt(os.Getenv("TELEGRAM_ADMIN_ID"), 10, 64); err == nil {
+		cfg.TelegramAdminID = v
 	}
 
 	if raw := os.Getenv("FEED_URLS"); raw != "" {
