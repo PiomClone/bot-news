@@ -195,3 +195,43 @@ func TestGetUnsentCount(t *testing.T) {
 		t.Errorf("ожидали 3 (старая не считается, статья без published_at считается по fetched_at), получили %d", count)
 	}
 }
+
+func TestGetLatestPerFeed(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	base := time.Now()
+	mustSave(t, db, []storage.Article{
+		{FeedURL: "http://rss/a", GUID: "a-old", Title: "A old", Link: "http://a/old", FetchedAt: base.Add(-3 * time.Hour), PublishedAt: base.Add(-3 * time.Hour)},
+		{FeedURL: "http://rss/a", GUID: "a-new", Title: "A new", Link: "http://a/new", FetchedAt: base.Add(-1 * time.Hour), PublishedAt: base.Add(-1 * time.Hour)},
+		{FeedURL: "http://rss/a", GUID: "a-mid", Title: "A mid", Link: "http://a/mid", FetchedAt: base.Add(-2 * time.Hour), PublishedAt: base.Add(-2 * time.Hour)},
+		{FeedURL: "http://rss/b", GUID: "b-old", Title: "B old", Link: "http://b/old", FetchedAt: base.Add(-4 * time.Hour)},
+		{FeedURL: "http://rss/b", GUID: "b-new", Title: "B new", Link: "http://b/new", FetchedAt: base.Add(-30 * time.Minute)},
+	})
+
+	saved, err := db.GetUnsent(ctx, base.Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("GetUnsent: %v", err)
+	}
+	if err := db.MarkSent(ctx, []int64{saved[2].ID}); err != nil {
+		t.Fatalf("MarkSent: %v", err)
+	}
+
+	latest, err := db.GetLatestPerFeed(ctx, 2)
+	if err != nil {
+		t.Fatalf("GetLatestPerFeed: %v", err)
+	}
+	if len(latest) != 4 {
+		t.Fatalf("ожидали 4 статьи, получили %d: %#v", len(latest), latest)
+	}
+
+	wantTitles := []string{"A new", "A mid", "B new", "B old"}
+	for i, want := range wantTitles {
+		if latest[i].Title != want {
+			t.Fatalf("latest[%d]: ожидали %q, получили %q", i, want, latest[i].Title)
+		}
+	}
+	if !latest[1].Sent {
+		t.Fatalf("ожидали, что отправленный материал тоже попадет в latest")
+	}
+}

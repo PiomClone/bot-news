@@ -147,6 +147,50 @@ func (s *DB) GetUnsentCount(ctx context.Context, since time.Time) (int, error) {
 	return count, err
 }
 
+func (s *DB) GetLatestPerFeed(ctx context.Context, limit int) ([]Article, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, feed_url, guid, title, link, description, published_at, fetched_at, sent
+		FROM (
+			SELECT
+				id, feed_url, guid, title, link, description, published_at, fetched_at, sent,
+				ROW_NUMBER() OVER (
+					PARTITION BY feed_url
+					ORDER BY COALESCE(published_at, fetched_at) DESC
+				) AS rn
+			FROM articles
+		)
+		WHERE rn <= ?
+		ORDER BY feed_url ASC, COALESCE(published_at, fetched_at) DESC
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var articles []Article
+	for rows.Next() {
+		var a Article
+		var pubAt *int64
+		var fetchedAt int64
+		var sent int
+		err := rows.Scan(&a.ID, &a.FeedURL, &a.GUID, &a.Title, &a.Link,
+			&a.Description, &pubAt, &fetchedAt, &sent)
+		if err != nil {
+			return nil, err
+		}
+		a.FetchedAt = time.Unix(fetchedAt, 0)
+		if pubAt != nil {
+			a.PublishedAt = time.Unix(*pubAt, 0)
+		}
+		a.Sent = sent != 0
+		articles = append(articles, a)
+	}
+	return articles, rows.Err()
+}
+
 type Stats struct {
 	TotalArticles int64
 	SentArticles  int64

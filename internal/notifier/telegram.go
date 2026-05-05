@@ -76,9 +76,25 @@ func (r numericRecipient) Recipient() string { return strconv.FormatInt(int64(r)
 
 // ListenCommands запускает polling и обрабатывает команды /fetch, /digest, /stats.
 // Реагирует только на сообщения от adminID (если задан).
-func (t *Telegram) ListenCommands(ctx context.Context, adminID int64, onFetch, onDigest func(), onStats func() string, onDigestCount func() int) {
+func (t *Telegram) ListenCommands(ctx context.Context, adminID int64, onFetch, onDigest func(), onStats, onLatest func() string, onDigestCount func() int) {
+	senderID := func(c telebot.Context) int64 {
+		sender := c.Sender()
+		if sender == nil {
+			return 0
+		}
+		return sender.ID
+	}
 	allowed := func(c telebot.Context) bool {
-		return adminID == 0 || c.Sender().ID == adminID
+		sender := c.Sender()
+		if sender == nil {
+			slog.Warn("команда без отправителя")
+			return false
+		}
+		ok := adminID == 0 || sender.ID == adminID
+		if !ok {
+			slog.Warn("команда отклонена", "sender_id", sender.ID, "username", sender.Username, "admin_id", adminID)
+		}
+		return ok
 	}
 
 	btnFetch := telebot.Btn{Unique: "cb_fetch", Text: "🔄 Собрать статьи"}
@@ -100,30 +116,42 @@ func (t *Telegram) ListenCommands(ctx context.Context, adminID int64, onFetch, o
 	}
 
 	t.bot.Handle("/fetch", func(c telebot.Context) error {
+		slog.Info("получена команда Telegram", "command", "fetch", "sender_id", senderID(c))
 		if !allowed(c) {
 			return nil
 		}
 		return c.Reply(doFetch())
 	})
 	t.bot.Handle("/digest", func(c telebot.Context) error {
+		slog.Info("получена команда Telegram", "command", "digest", "sender_id", senderID(c))
 		if !allowed(c) {
 			return nil
 		}
 		return c.Reply(doDigest())
 	})
 	t.bot.Handle("/stats", func(c telebot.Context) error {
+		slog.Info("получена команда Telegram", "command", "stats", "sender_id", senderID(c))
 		if !allowed(c) {
 			return nil
 		}
 		return c.Reply(onStats(), keyboard)
 	})
+	t.bot.Handle("/latest", func(c telebot.Context) error {
+		slog.Info("получена команда Telegram", "command", "latest", "sender_id", senderID(c))
+		if !allowed(c) {
+			return nil
+		}
+		return c.Reply(onLatest(), keyboard)
+	})
 	t.bot.Handle(&btnFetch, func(c telebot.Context) error {
+		slog.Info("получен callback Telegram", "callback", "fetch", "sender_id", senderID(c))
 		if !allowed(c) {
 			return c.Respond()
 		}
 		return c.Respond(&telebot.CallbackResponse{Text: doFetch()})
 	})
 	t.bot.Handle(&btnDigest, func(c telebot.Context) error {
+		slog.Info("получен callback Telegram", "callback", "digest", "sender_id", senderID(c))
 		if !allowed(c) {
 			return c.Respond()
 		}
@@ -133,6 +161,7 @@ func (t *Telegram) ListenCommands(ctx context.Context, adminID int64, onFetch, o
 	if err := t.bot.SetCommands([]telebot.Command{
 		{Text: "digest", Description: "Сформировать и отправить дайджест"},
 		{Text: "fetch", Description: "Собрать свежие статьи"},
+		{Text: "latest", Description: "Показать последние материалы по фидам"},
 		{Text: "stats", Description: "Статистика сбора"},
 	}); err != nil {
 		slog.Warn("не удалось установить команды бота", "error", err)

@@ -117,6 +117,7 @@ func (a *app) run() {
 				func() { a.fetch(ctx) },
 				func() { a.digest(ctx) },
 				func() string { return a.statsText(ctx) },
+				func() string { return a.latestText(ctx) },
 				func() int {
 					n, _ := a.db.GetUnsentCount(ctx, a.digestSince())
 					return n
@@ -288,6 +289,51 @@ func (a *app) statsText(ctx context.Context) string {
 		stats.TotalArticles-stats.SentArticles,
 		lastFetch,
 	)
+}
+
+func (a *app) latestText(ctx context.Context) string {
+	articles, err := a.db.GetLatestPerFeed(ctx, 3)
+	if err != nil {
+		return "ошибка получения последних материалов"
+	}
+	if len(articles) == 0 {
+		return "материалов пока нет"
+	}
+
+	var sb strings.Builder
+	sb.WriteString("📰 Последние материалы\n")
+	var currentFeed string
+	for _, article := range articles {
+		if article.FeedURL != currentFeed {
+			currentFeed = article.FeedURL
+			fmt.Fprintf(&sb, "\n%s\n", sourceLabel(article.FeedURL))
+		}
+		postedAt := article.FetchedAt
+		if !article.PublishedAt.IsZero() {
+			postedAt = article.PublishedAt
+		}
+		status := "не отправлено"
+		if article.Sent {
+			status = "отправлено"
+		}
+		fmt.Fprintf(&sb, "- %s (%s, %s)\n", article.Title, postedAt.In(a.loc()).Format(timeFmt), status)
+		if article.Link != "" {
+			fmt.Fprintf(&sb, "  %s\n", article.Link)
+		}
+	}
+	return sb.String()
+}
+
+func sourceLabel(feedURL string) string {
+	if feedURL == "" {
+		return "@unknown"
+	}
+	parts := strings.Split(strings.Trim(feedURL, "/"), "/")
+	name := parts[len(parts)-1]
+	if name == "" {
+		return feedURL
+	}
+	return "@" + name
 }
 
 func (a *app) digest(ctx context.Context) {

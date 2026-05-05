@@ -3,6 +3,7 @@ package summarizer
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -12,6 +13,23 @@ import (
 // Summarizer формирует текст дайджеста из списка статей.
 type Summarizer interface {
 	Summarize(ctx context.Context, articles []storage.Article) (string, error)
+}
+
+func sourceLabel(feedURL string) string {
+	if feedURL == "" {
+		return "@unknown"
+	}
+	u, err := url.Parse(feedURL)
+	if err == nil {
+		parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+		if len(parts) > 0 {
+			name := parts[len(parts)-1]
+			if name != "" {
+				return "@" + name
+			}
+		}
+	}
+	return feedURL
 }
 
 // SimpleSummarizer — форматирует статьи как Markdown-список без AI.
@@ -33,7 +51,7 @@ func (s *SimpleSummarizer) Summarize(_ context.Context, articles []storage.Artic
 	for _, a := range articles {
 		title := strings.ReplaceAll(a.Title, "[", "\\[")
 		title = strings.ReplaceAll(title, "]", "\\]")
-		fmt.Fprintf(&sb, "*%s*\n", title)
+		fmt.Fprintf(&sb, "*%s* · %s\n", sourceLabel(a.FeedURL), title)
 		if a.Description != "" {
 			desc := strings.TrimSpace(a.Description)
 			// обрезаем до 200 символов чтобы не раздувать сообщение
