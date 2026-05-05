@@ -90,6 +90,7 @@ func (f *Fetcher) fetchOne(ctx context.Context, url string) ([]storage.Article, 
 		}
 		a := storage.Article{
 			FeedURL:     url,
+			FeedTitle:   feed.Title,
 			GUID:        guid,
 			Title:       item.Title,
 			Link:        item.Link,

@@ -324,7 +324,11 @@ func (a *app) latestText(ctx context.Context) string {
 		for _, article := range articles {
 			if article.FeedURL != currentFeed {
 				currentFeed = article.FeedURL
-				fmt.Fprintf(&sb, "\n<b>%s</b>\n", html.EscapeString(sourceLabel(article.FeedURL)))
+				source := article.FeedTitle
+				if source == "" {
+					source = sourceLabel(article.FeedURL)
+				}
+				fmt.Fprintf(&sb, "\n<b>%s</b>\n", html.EscapeString(source))
 			}
 			fmt.Fprintf(&sb, "- %s\n  %s\n", html.EscapeString(article.Title), html.EscapeString(article.Link))
 		}

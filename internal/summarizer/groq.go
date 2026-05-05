@@ -41,12 +41,16 @@ func (g *GroqSummarizer) Summarize(ctx context.Context, articles []storage.Artic
 	// Формируем список статей для промпта
 	var sb strings.Builder
 	for i, a := range articles {
+		source := a.FeedTitle
+		if source == "" {
+			source = sourceLabel(a.FeedURL)
+		}
 		desc := a.Description
 		if len([]rune(desc)) > 300 {
 			desc = string([]rune(desc)[:300]) + "..."
 		}
 		fmt.Fprintf(&sb, "%d. Источник: %s\n   Заголовок: %s\n   Описание: %s\n   Ссылка: %s\n", 
-			i+1, sourceLabel(a.FeedURL), a.Title, desc, a.Link)
+			i+1, source, a.Title, desc, a.Link)
 	}
 
 	date := time.Now().Format("2 January 2006")

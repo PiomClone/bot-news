@@ -51,8 +51,12 @@ func (s *SimpleSummarizer) Summarize(_ context.Context, articles []storage.Artic
 	fmt.Fprintf(&sb, "<b>Дайджест за %s</b>\n\n", date)
 
 	for _, a := range articles {
+		source := a.FeedTitle
+		if source == "" {
+			source = sourceLabel(a.FeedURL)
+		}
 		title := html.EscapeString(a.Title)
-		fmt.Fprintf(&sb, "<b>%s</b> · %s\n", html.EscapeString(sourceLabel(a.FeedURL)), title)
+		fmt.Fprintf(&sb, "<b>%s</b> · %s\n", html.EscapeString(source), title)
 		if a.Description != "" {
 			desc := strings.TrimSpace(a.Description)
 			desc = html.EscapeString(desc)

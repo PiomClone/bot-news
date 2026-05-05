@@ -13,6 +13,7 @@ import (
 type Article struct {
 	ID          int64
 	FeedURL     string
+	FeedTitle   string
 	GUID        string
 	Title       string
 	Link        string
@@ -61,6 +62,7 @@ func (s *DB) migrate() error {
 		CREATE TABLE IF NOT EXISTS articles (
 			id           INTEGER PRIMARY KEY AUTOINCREMENT,
 			feed_url     TEXT NOT NULL,
+			feed_title   TEXT DEFAULT '',
 			guid         TEXT NOT NULL UNIQUE,
 			title        TEXT NOT NULL,
 			link         TEXT NOT NULL,
@@ -77,7 +79,14 @@ func (s *DB) migrate() error {
 			created_at INTEGER NOT NULL
 		);
 	`)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Миграция для существующей базы: добавляем колонку, если её нет
+	_, _ = s.db.Exec("ALTER TABLE articles ADD COLUMN feed_title TEXT DEFAULT ''")
+
+	return nil
 }
 
 func (s *DB) SaveDigest(ctx context.Context, content string) error {
@@ -103,9 +112,10 @@ func (s *DB) SaveArticles(ctx context.Context, articles []Article) error {
 	defer tx.Rollback()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO articles (feed_url, guid, title, link, description, published_at, fetched_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO articles (feed_url, feed_title, guid, title, link, description, published_at, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(guid) DO UPDATE SET
+			feed_title = excluded.feed_title,
 			title = excluded.title,
 			link = excluded.link,
 			description = excluded.description,
@@ -123,7 +133,7 @@ func (s *DB) SaveArticles(ctx context.Context, articles []Article) error {
 			pubAt = &v
 		}
 		_, err := stmt.ExecContext(ctx,
-			a.FeedURL, a.GUID, a.Title, a.Link, a.Description,
+			a.FeedURL, a.FeedTitle, a.GUID, a.Title, a.Link, a.Description,
 			pubAt, a.FetchedAt.Unix(),
 		)
 		if err != nil {
@@ -146,7 +156,7 @@ func (s *DB) DeleteOldArticles(ctx context.Context, days int) (int64, error) {
 
 func (s *DB) GetUnsent(ctx context.Context, since time.Time) ([]Article, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, feed_url, guid, title, link, description, published_at, fetched_at
+		SELECT id, feed_url, feed_title, guid, title, link, description, published_at, fetched_at
 		FROM articles
 		WHERE sent = 0 AND COALESCE(published_at, fetched_at) >= ?
 		ORDER BY COALESCE(published_at, fetched_at) ASC
@@ -161,7 +171,7 @@ func (s *DB) GetUnsent(ctx context.Context, since time.Time) ([]Article, error) 
 		var a Article
 		var pubAt *int64
 		var fetchedAt int64
-		err := rows.Scan(&a.ID, &a.FeedURL, &a.GUID, &a.Title, &a.Link,
+		err := rows.Scan(&a.ID, &a.FeedURL, &a.FeedTitle, &a.GUID, &a.Title, &a.Link,
 			&a.Description, &pubAt, &fetchedAt)
 		if err != nil {
 			return nil, err
@@ -189,10 +199,10 @@ func (s *DB) GetLatestPerFeed(ctx context.Context, limit int) ([]Article, error)
 		return nil, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, feed_url, guid, title, link, description, published_at, fetched_at, sent
+		SELECT id, feed_url, feed_title, guid, title, link, description, published_at, fetched_at, sent
 		FROM (
 			SELECT
-				id, feed_url, guid, title, link, description, published_at, fetched_at, sent,
+				id, feed_url, feed_title, guid, title, link, description, published_at, fetched_at, sent,
 				ROW_NUMBER() OVER (
 					PARTITION BY feed_url
 					ORDER BY COALESCE(published_at, fetched_at) DESC
@@ -213,7 +223,7 @@ func (s *DB) GetLatestPerFeed(ctx context.Context, limit int) ([]Article, error)
 		var pubAt *int64
 		var fetchedAt int64
 		var sent int
-		err := rows.Scan(&a.ID, &a.FeedURL, &a.GUID, &a.Title, &a.Link,
+		err := rows.Scan(&a.ID, &a.FeedURL, &a.FeedTitle, &a.GUID, &a.Title, &a.Link,
 			&a.Description, &pubAt, &fetchedAt, &sent)
 		if err != nil {
 			return nil, err

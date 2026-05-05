@@ -38,8 +38,8 @@ func TestSaveArticles_Deduplication(t *testing.T) {
 
 	now := time.Now()
 	mustSave(t, db, []storage.Article{
-		{FeedURL: testFeedURL, GUID: "guid-1", Title: "Статья 1", Link: "http://link/1", FetchedAt: now, PublishedAt: now},
-		{FeedURL: testFeedURL, GUID: "guid-1", Title: "Статья 1 дубль", Link: "http://link/1", FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedURL, FeedTitle: "Source 1", GUID: "guid-1", Title: "Статья 1", Link: "http://link/1", FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedURL, FeedTitle: "Source 1", GUID: "guid-1", Title: "Статья 1 дубль", Link: "http://link/1", FetchedAt: now, PublishedAt: now},
 	})
 
 	since := now.AddDate(0, 0, -1)
@@ -53,6 +53,9 @@ func TestSaveArticles_Deduplication(t *testing.T) {
 	if saved[0].Title != "Статья 1 дубль" {
 		t.Errorf("неожиданный заголовок: %q, ожидали обновление (upsert)", saved[0].Title)
 	}
+	if saved[0].FeedTitle != "Source 1" {
+		t.Errorf("неожиданный FeedTitle: %q", saved[0].FeedTitle)
+	}
 }
 
 func TestMarkSent(t *testing.T) {
@@ -61,8 +64,8 @@ func TestMarkSent(t *testing.T) {
 
 	now := time.Now()
 	mustSave(t, db, []storage.Article{
-		{FeedURL: testFeedURL, GUID: "guid-a", Title: "А", Link: testLinkA, FetchedAt: now, PublishedAt: now},
-		{FeedURL: testFeedURL, GUID: "guid-b", Title: "Б", Link: testLinkB, FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedURL, FeedTitle: "A", GUID: "guid-a", Title: "А", Link: testLinkA, FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedURL, FeedTitle: "B", GUID: "guid-b", Title: "Б", Link: testLinkB, FetchedAt: now, PublishedAt: now},
 	})
 
 	since := now.AddDate(0, 0, -1)
@@ -89,11 +92,11 @@ func TestGetUnsent_SinceFilter(t *testing.T) {
 
 	// Старая статья — с published_at 3 дня назад
 	mustSave(t, db, []storage.Article{
-		{FeedURL: testFeedF, GUID: "old-1", Title: "Старая", Link: "http://old", FetchedAt: old, PublishedAt: old},
+		{FeedURL: testFeedF, FeedTitle: "Old", GUID: "old-1", Title: "Старая", Link: "http://old", FetchedAt: old, PublishedAt: old},
 	})
 	// Новая статья — сегодня
 	mustSave(t, db, []storage.Article{
-		{FeedURL: testFeedF, GUID: "new-1", Title: "Новая", Link: "http://new", FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedF, FeedTitle: "New", GUID: "new-1", Title: "Новая", Link: "http://new", FetchedAt: now, PublishedAt: now},
 	})
 
 	since := now.AddDate(0, 0, -1)
@@ -115,7 +118,7 @@ func TestGetUnsentNullPublishedAt(t *testing.T) {
 	now := time.Now()
 	// Статья без published_at — должна попасть по fetched_at
 	mustSave(t, db, []storage.Article{
-		{FeedURL: testFeedF, GUID: "no-pub", Title: "Без даты", Link: "http://x", FetchedAt: now},
+		{FeedURL: testFeedF, FeedTitle: "F", GUID: "no-pub", Title: "Без даты", Link: "http://x", FetchedAt: now},
 	})
 
 	since := now.AddDate(0, 0, -1)
@@ -150,8 +153,8 @@ func TestGetStats(t *testing.T) {
 
 	now := time.Now()
 	mustSave(t, db, []storage.Article{
-		{FeedURL: testFeedF, GUID: "g1", Title: "A", Link: testLinkA, FetchedAt: now, PublishedAt: now},
-		{FeedURL: testFeedF, GUID: "g2", Title: "B", Link: testLinkB, FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedF, FeedTitle: "F", GUID: "g1", Title: "A", Link: testLinkA, FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedF, FeedTitle: "F", GUID: "g2", Title: "B", Link: testLinkB, FetchedAt: now, PublishedAt: now},
 	})
 
 	since := now.AddDate(0, 0, -1)
@@ -179,10 +182,10 @@ func TestGetUnsentCount(t *testing.T) {
 
 	now := time.Now()
 	mustSave(t, db, []storage.Article{
-		{FeedURL: testFeedF, GUID: "g1", Title: "A", Link: testLinkA, FetchedAt: now, PublishedAt: now},
-		{FeedURL: testFeedF, GUID: "g2", Title: "B", Link: testLinkB, FetchedAt: now, PublishedAt: now},
-		{FeedURL: testFeedF, GUID: "g-no-pub", Title: "No pub", Link: "http://no-pub", FetchedAt: now},
-		{FeedURL: testFeedF, GUID: "g3", Title: "C", Link: "http://c",
+		{FeedURL: testFeedF, FeedTitle: "F", GUID: "g1", Title: "A", Link: testLinkA, FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedF, FeedTitle: "F", GUID: "g2", Title: "B", Link: testLinkB, FetchedAt: now, PublishedAt: now},
+		{FeedURL: testFeedF, FeedTitle: "F", GUID: "g-no-pub", Title: "No pub", Link: "http://no-pub", FetchedAt: now},
+		{FeedURL: testFeedF, FeedTitle: "F", GUID: "g3", Title: "C", Link: "http://c",
 			FetchedAt: now.AddDate(0, 0, -3), PublishedAt: now.AddDate(0, 0, -3)},
 	})
 
@@ -202,11 +205,11 @@ func TestGetLatestPerFeed(t *testing.T) {
 
 	base := time.Now()
 	mustSave(t, db, []storage.Article{
-		{FeedURL: "http://rss/a", GUID: "a-old", Title: "A old", Link: "http://a/old", FetchedAt: base.Add(-3 * time.Hour), PublishedAt: base.Add(-3 * time.Hour)},
-		{FeedURL: "http://rss/a", GUID: "a-new", Title: "A new", Link: "http://a/new", FetchedAt: base.Add(-1 * time.Hour), PublishedAt: base.Add(-1 * time.Hour)},
-		{FeedURL: "http://rss/a", GUID: "a-mid", Title: "A mid", Link: "http://a/mid", FetchedAt: base.Add(-2 * time.Hour), PublishedAt: base.Add(-2 * time.Hour)},
-		{FeedURL: "http://rss/b", GUID: "b-old", Title: "B old", Link: "http://b/old", FetchedAt: base.Add(-4 * time.Hour)},
-		{FeedURL: "http://rss/b", GUID: "b-new", Title: "B new", Link: "http://b/new", FetchedAt: base.Add(-30 * time.Minute)},
+		{FeedURL: "http://rss/a", FeedTitle: "Title A", GUID: "a-old", Title: "A old", Link: "http://a/old", FetchedAt: base.Add(-3 * time.Hour), PublishedAt: base.Add(-3 * time.Hour)},
+		{FeedURL: "http://rss/a", FeedTitle: "Title A", GUID: "a-new", Title: "A new", Link: "http://a/new", FetchedAt: base.Add(-1 * time.Hour), PublishedAt: base.Add(-1 * time.Hour)},
+		{FeedURL: "http://rss/a", FeedTitle: "Title A", GUID: "a-mid", Title: "A mid", Link: "http://a/mid", FetchedAt: base.Add(-2 * time.Hour), PublishedAt: base.Add(-2 * time.Hour)},
+		{FeedURL: "http://rss/b", FeedTitle: "Title B", GUID: "b-old", Title: "B old", Link: "http://b/old", FetchedAt: base.Add(-4 * time.Hour)},
+		{FeedURL: "http://rss/b", FeedTitle: "Title B", GUID: "b-new", Title: "B new", Link: "http://b/new", FetchedAt: base.Add(-30 * time.Minute)},
 	})
 
 	saved, err := db.GetUnsent(ctx, base.Add(-24*time.Hour))
@@ -229,6 +232,9 @@ func TestGetLatestPerFeed(t *testing.T) {
 	for i, want := range wantTitles {
 		if latest[i].Title != want {
 			t.Fatalf("latest[%d]: ожидали %q, получили %q", i, want, latest[i].Title)
+		}
+		if latest[i].FeedTitle == "" {
+			t.Fatalf("latest[%d]: FeedTitle не должен быть пустым", i)
 		}
 	}
 	if !latest[1].Sent {
@@ -279,9 +285,9 @@ func TestDeleteOldArticles(t *testing.T) {
 	old := now.AddDate(0, 0, -40)
 
 	mustSave(t, db, []storage.Article{
-		{FeedURL: testFeedF, GUID: "old-sent", Title: "Старая отправленная", FetchedAt: old},
-		{FeedURL: testFeedF, GUID: "old-unsent", Title: "Старая неотправленная", FetchedAt: old},
-		{FeedURL: testFeedF, GUID: "new-sent", Title: "Новая отправленная", FetchedAt: now},
+		{FeedURL: testFeedF, FeedTitle: "F", GUID: "old-sent", Title: "Старая отправленная", FetchedAt: old},
+		{FeedURL: testFeedF, FeedTitle: "F", GUID: "old-unsent", Title: "Старая неотправленная", FetchedAt: old},
+		{FeedURL: testFeedF, FeedTitle: "F", GUID: "new-sent", Title: "Новая отправленная", FetchedAt: now},
 	})
 
 	// Помечаем "отправленными"
