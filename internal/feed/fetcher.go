@@ -15,13 +15,11 @@ import (
 const maxConcurrent = 5
 
 type Fetcher struct {
-	parser  *gofeed.Parser
 	timeout time.Duration
 }
 
 func NewFetcher(timeout time.Duration) *Fetcher {
 	return &Fetcher{
-		parser:  gofeed.NewParser(),
 		timeout: timeout,
 	}
 }
@@ -73,7 +71,8 @@ func (f *Fetcher) fetchOne(ctx context.Context, url string) ([]storage.Article, 
 	ctx, cancel := context.WithTimeout(ctx, f.timeout)
 	defer cancel()
 
-	feed, err := f.parser.ParseURLWithContext(url, ctx)
+	fp := gofeed.NewParser()
+	feed, err := fp.ParseURLWithContext(url, ctx)
 	if err != nil {
 		return nil, err
 	}
