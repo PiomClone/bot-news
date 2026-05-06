@@ -313,7 +313,7 @@ func (a *app) latestText(ctx context.Context) string {
 	}
 
 	slog.Info("формирую AI-обзор последних новостей по запросу", "count", len(articles))
-	
+
 	text, err := a.sum.Summarize(ctx, articles)
 	if err != nil {
 		slog.Warn("ошибка AI для latest, откат к простому списку", "error", err)
@@ -364,8 +364,8 @@ func (a *app) digest(ctx context.Context) {
 		heartbeat := fmt.Sprintf("✅ Дайджест за %s: новых материалов нет. Система работает.",
 			time.Now().Format("2 January 2006"))
 		heartbeat += a.statsFooter(ctx, 0)
-		if err := a.notif.Send(ctx, heartbeat); err != nil {
-			slog.Error("ошибка отправки heartbeat", "error", err)
+		if errSend := a.notif.Send(ctx, heartbeat); errSend != nil {
+			slog.Error("ошибка отправки heartbeat", "error", errSend)
 		}
 		return
 	}

@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	_ "modernc.org/sqlite" // pure-go sqlite driver
 )
 
 type Article struct {
@@ -97,7 +97,8 @@ func (s *DB) SaveDigest(ctx context.Context, content string) error {
 
 func (s *DB) GetLastDigest(ctx context.Context) (string, error) {
 	var content string
-	err := s.db.QueryRowContext(ctx, `SELECT content FROM digests ORDER BY created_at DESC, id DESC LIMIT 1`).Scan(&content)
+	query := `SELECT content FROM digests ORDER BY created_at DESC, id DESC LIMIT 1`
+	err := s.db.QueryRowContext(ctx, query).Scan(&content)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -109,7 +110,9 @@ func (s *DB) SaveArticles(ctx context.Context, articles []Article) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback()
+	defer func() {
+		_ = tx.Rollback()
+	}()
 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO articles (feed_url, feed_title, guid, title, link, description, published_at, fetched_at)
@@ -273,6 +276,7 @@ func (s *DB) MarkSent(ctx context.Context, ids []int64) error {
 		placeholders[i] = "?"
 		args[i] = id
 	}
+	// nolint:gosec // G202: SQL string concatenation. Placeholders are safe here.
 	query := "UPDATE articles SET sent = 1 WHERE id IN (" + strings.Join(placeholders, ",") + ")"
 	_, err := s.db.ExecContext(ctx, query, args...)
 	return err

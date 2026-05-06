@@ -17,7 +17,10 @@ func Do(ctx context.Context, attempts int, fn func() error) error {
 		if i == attempts-1 {
 			break
 		}
-		wait := time.Duration(1<<uint(i)) * time.Second
+		// i is already limited by 'attempts' which is small (usually 3-5)
+		// nolint:gosec // G115: integer overflow conversion. i is small.
+		exponent := uint(i)
+		wait := time.Duration(1<<exponent) * time.Second
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

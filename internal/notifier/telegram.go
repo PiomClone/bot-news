@@ -3,7 +3,6 @@ package notifier
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -95,27 +94,20 @@ type numericRecipient int64
 
 func (r numericRecipient) Recipient() string { return strconv.FormatInt(int64(r), 10) }
 
-// ListenCommands запускает polling и обрабатывает команды /fetch, /digest, /stats.
-// Реагирует только на сообщения от adminID (если задан).
-func (t *Telegram) ListenCommands(ctx context.Context, adminID int64, onFetch, onDigest func(), onStats, onLatest func() string, onDigestCount func() int) {
-	senderID := func(c telebot.Context) int64 {
-		sender := c.Sender()
-		if sender == nil {
-			return 0
-		}
-		return sender.ID
-	}
+// ListenCommands запускает polling и обрабатывает команды.
+func (t *Telegram) ListenCommands(
+	ctx context.Context,
+	adminID int64,
+	onFetch, onDigest func(),
+	onStats, onLatest func() string,
+	onDigestCount func() int,
+) {
 	allowed := func(c telebot.Context) bool {
 		sender := c.Sender()
 		if sender == nil {
-			slog.Warn("команда без отправителя")
 			return false
 		}
-		ok := adminID == 0 || sender.ID == adminID
-		if !ok {
-			slog.Warn("команда отклонена", "sender_id", sender.ID, "username", sender.Username, "admin_id", adminID)
-		}
-		return ok
+		return adminID == 0 || sender.ID == adminID
 	}
 
 	btnFetch := telebot.Btn{Unique: "cb_fetch", Text: "🔄 Собрать статьи"}
@@ -123,85 +115,81 @@ func (t *Telegram) ListenCommands(ctx context.Context, adminID int64, onFetch, o
 	keyboard := &telebot.ReplyMarkup{}
 	keyboard.Inline(keyboard.Row(btnFetch, btnDigest))
 
-	doFetch := func() string {
-		go onFetch()
-		return "⏳ Сбор статей запущен..."
-	}
-	doDigest := func() string {
-		n := onDigestCount()
-		if n == 0 {
-			return "📭 Новых статей за сегодня нет"
-		}
-		go onDigest()
-		return fmt.Sprintf("⏳ Формирую дайджест из %d статей за сегодня...", n)
-	}
-
-	opts := &telebot.SendOptions{
-		ParseMode:             telebot.ModeHTML,
-		DisableWebPagePreview: true,
-	}
+	opts := &telebot.SendOptions{ParseMode: telebot.ModeHTML, DisableWebPagePreview: true}
 
 	t.bot.Handle("/fetch", func(c telebot.Context) error {
-		slog.Info("получена команда Telegram", "command", "fetch", "sender_id", senderID(c))
 		if !allowed(c) {
 			return nil
 		}
-		return c.Reply(doFetch(), opts)
+		go onFetch()
+		return c.Reply("⏳ Сбор статей запущен...", opts)
 	})
 	t.bot.Handle("/digest", func(c telebot.Context) error {
-		slog.Info("получена команда Telegram", "command", "digest", "sender_id", senderID(c))
 		if !allowed(c) {
 			return nil
 		}
-		return c.Reply(doDigest(), opts)
+		n := onDigestCount()
+		if n == 0 {
+			return c.Reply("📭 Новых статей за сегодня нет", opts)
+		}
+		go onDigest()
+		return c.Reply(fmt.Sprintf("⏳ Формирую дайджест из %d статей за сегодня...", n), opts)
 	})
 	t.bot.Handle("/stats", func(c telebot.Context) error {
-		slog.Info("получена команда Telegram", "command", "stats", "sender_id", senderID(c))
 		if !allowed(c) {
 			return nil
 		}
 		return c.Reply(onStats(), keyboard, opts)
 	})
 	t.bot.Handle("/latest", func(c telebot.Context) error {
-		slog.Info("получена команда Telegram", "command", "latest", "sender_id", senderID(c))
 		if !allowed(c) {
 			return nil
 		}
 		return c.Reply(onLatest(), keyboard, opts)
 	})
-	t.bot.Handle(&btnFetch, func(c telebot.Context) error {
-		slog.Info("получен callback Telegram", "callback", "fetch", "sender_id", senderID(c))
-		if !allowed(c) {
-			return c.Respond()
-		}
-		return c.Respond(&telebot.CallbackResponse{Text: doFetch()})
-	})
-	t.bot.Handle(&btnDigest, func(c telebot.Context) error {
-		slog.Info("получен callback Telegram", "callback", "digest", "sender_id", senderID(c))
-		if !allowed(c) {
-			return c.Respond()
-		}
-		return c.Respond(&telebot.CallbackResponse{Text: doDigest()})
-	})
+	t.setupCallbacks(allowed, onFetch, onDigest, onDigestCount)
 
-	if err := t.bot.SetCommands([]telebot.Command{
+	_ = t.bot.SetCommands([]telebot.Command{
 		{Text: "digest", Description: "Сформировать и отправить дайджест"},
 		{Text: "fetch", Description: "Собрать свежие статьи"},
 		{Text: "latest", Description: "Показать последние материалы по фидам"},
 		{Text: "stats", Description: "Статистика сбора"},
-	}); err != nil {
-		slog.Warn("не удалось установить команды бота", "error", err)
-	}
+	})
 
 	go t.bot.Start()
-	slog.Info("бот слушает команды")
-
 	<-ctx.Done()
 	t.bot.Stop()
 }
 
-// splitMessage делит текст на части не длиннее maxLen рун,
-// по возможности разрезая по переносу строки.
+func (t *Telegram) setupCallbacks(
+	allowed func(telebot.Context) bool,
+	onFetch, onDigest func(),
+	onDigestCount func() int,
+) {
+	btnFetch := telebot.Btn{Unique: "cb_fetch"}
+	btnDigest := telebot.Btn{Unique: "cb_digest"}
+
+	t.bot.Handle(&btnFetch, func(c telebot.Context) error {
+		if !allowed(c) {
+			return c.Respond()
+		}
+		go onFetch()
+		return c.Respond(&telebot.CallbackResponse{Text: "⏳ Сбор статей запущен..."})
+	})
+	t.bot.Handle(&btnDigest, func(c telebot.Context) error {
+		if !allowed(c) {
+			return c.Respond()
+		}
+		n := onDigestCount()
+		if n == 0 {
+			return c.Respond(&telebot.CallbackResponse{Text: "📭 Новых статей нет"})
+		}
+		go onDigest()
+		return c.Respond(&telebot.CallbackResponse{Text: "⏳ Формирую дайджест..."})
+	})
+}
+
+// splitMessage делит текст на части.
 func splitMessage(text string, maxLen int) []string {
 	runes := []rune(text)
 	if len(runes) <= maxLen {
