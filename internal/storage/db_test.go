@@ -367,3 +367,53 @@ func TestDeleteOldArticles(t *testing.T) {
 		t.Errorf("ожидали 2 статьи в базе, осталось %d", stats.TotalArticles)
 	}
 }
+
+func TestFeeds(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	// 1. SyncFeeds
+	envFeeds := []string{"http://rss1", "http://rss2", "  ", ""}
+	if err := db.SyncFeeds(ctx, envFeeds); err != nil {
+		t.Fatalf("SyncFeeds: %v", err)
+	}
+
+	// 2. GetAllFeeds
+	feeds, err := db.GetAllFeeds(ctx)
+	if err != nil {
+		t.Fatalf("GetAllFeeds: %v", err)
+	}
+	if len(feeds) != 2 {
+		t.Fatalf("ожидали 2 фида, получили %d", len(feeds))
+	}
+
+	// 3. GetActiveFeedURLs
+	urls, err := db.GetActiveFeedURLs(ctx)
+	if err != nil {
+		t.Fatalf("GetActiveFeedURLs: %v", err)
+	}
+	if len(urls) != 2 {
+		t.Errorf("ожидали 2 активных URL, получили %d", len(urls))
+	}
+
+	// 4. ToggleFeed
+	if err := db.ToggleFeed(ctx, "http://rss1"); err != nil {
+		t.Fatalf("ToggleFeed: %v", err)
+	}
+	urls, _ = db.GetActiveFeedURLs(ctx)
+	if len(urls) != 1 {
+		t.Errorf("после отключения ожидали 1 активный URL, получили %d", len(urls))
+	}
+	if urls[0] != "http://rss2" {
+		t.Errorf("ожидали активным http://rss2, получили %q", urls[0])
+	}
+
+	// 5. Второе переключение (включаем обратно)
+	if err := db.ToggleFeed(ctx, "http://rss1"); err != nil {
+		t.Fatalf("ToggleFeed (back): %v", err)
+	}
+	urls, _ = db.GetActiveFeedURLs(ctx)
+	if len(urls) != 2 {
+		t.Errorf("после включения ожидали 2 активных URL, получили %d", len(urls))
+	}
+}
