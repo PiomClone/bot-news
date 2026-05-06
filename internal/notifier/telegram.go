@@ -10,6 +10,7 @@ import (
 	telebot "gopkg.in/telebot.v3"
 
 	"bot-news/internal/retry"
+	"bot-news/internal/storage"
 )
 
 const maxMessageLen = 4096
@@ -101,6 +102,8 @@ func (t *Telegram) ListenCommands(
 	onFetch, onDigest func(),
 	onStats, onLatest func() string,
 	onDigestCount func() int,
+	onFeeds func() ([]storage.Feed, error),
+	onToggleFeed func(string) error,
 ) {
 	allowed := func(c telebot.Context) bool {
 		sender := c.Sender()
@@ -112,8 +115,8 @@ func (t *Telegram) ListenCommands(
 
 	btnFetch := telebot.Btn{Unique: "cb_fetch", Text: "🔄 Собрать статьи"}
 	btnDigest := telebot.Btn{Unique: "cb_digest", Text: "📨 Запустить дайджест"}
-	keyboard := &telebot.ReplyMarkup{}
-	keyboard.Inline(keyboard.Row(btnFetch, btnDigest))
+	keyboardMain := &telebot.ReplyMarkup{}
+	keyboardMain.Inline(keyboardMain.Row(btnFetch, btnDigest))
 
 	opts := &telebot.SendOptions{ParseMode: telebot.ModeHTML, DisableWebPagePreview: true}
 
@@ -139,19 +142,32 @@ func (t *Telegram) ListenCommands(
 		if !allowed(c) {
 			return nil
 		}
-		return c.Reply(onStats(), keyboard, opts)
+		return c.Reply(onStats(), keyboardMain, opts)
 	})
 	t.bot.Handle("/latest", func(c telebot.Context) error {
 		if !allowed(c) {
 			return nil
 		}
-		return c.Reply(onLatest(), keyboard, opts)
+		return c.Reply(onLatest(), keyboardMain, opts)
 	})
-	t.setupCallbacks(allowed, onFetch, onDigest, onDigestCount)
+	t.bot.Handle("/feeds", func(c telebot.Context) error {
+		if !allowed(c) {
+			return nil
+		}
+		feeds, err := onFeeds()
+		if err != nil {
+			return c.Reply("❌ Ошибка получения списка фидов")
+		}
+		return c.Reply("📋 <b>Управление фидами:</b>\nНажмите на кнопку, чтобы включить/выключить фид.",
+			t.makeFeedsKeyboard(feeds), opts)
+	})
+
+	t.setupCallbacks(allowed, onFetch, onDigest, onDigestCount, onFeeds, onToggleFeed)
 
 	_ = t.bot.SetCommands([]telebot.Command{
 		{Text: "digest", Description: "Сформировать и отправить дайджест"},
 		{Text: "fetch", Description: "Собрать свежие статьи"},
+		{Text: "feeds", Description: "Управление источниками RSS"},
 		{Text: "latest", Description: "Показать последние материалы по фидам"},
 		{Text: "stats", Description: "Статистика сбора"},
 	})
@@ -161,13 +177,35 @@ func (t *Telegram) ListenCommands(
 	t.bot.Stop()
 }
 
+func (t *Telegram) makeFeedsKeyboard(feeds []storage.Feed) *telebot.ReplyMarkup {
+	keyboard := &telebot.ReplyMarkup{}
+	var rows []telebot.Row
+	for _, f := range feeds {
+		status := "✅"
+		if !f.Enabled {
+			status = "❌"
+		}
+		label := f.Title
+		if label == "" {
+			label = sourceLabel(f.URL)
+		}
+		btn := keyboard.Data(fmt.Sprintf("%s %s", status, label), "cb_toggle_feed", f.URL)
+		rows = append(rows, keyboard.Row(btn))
+	}
+	keyboard.Inline(rows...)
+	return keyboard
+}
+
 func (t *Telegram) setupCallbacks(
 	allowed func(telebot.Context) bool,
 	onFetch, onDigest func(),
 	onDigestCount func() int,
+	onFeeds func() ([]storage.Feed, error),
+	onToggleFeed func(string) error,
 ) {
 	btnFetch := telebot.Btn{Unique: "cb_fetch"}
 	btnDigest := telebot.Btn{Unique: "cb_digest"}
+	btnToggle := telebot.Btn{Unique: "cb_toggle_feed"}
 
 	t.bot.Handle(&btnFetch, func(c telebot.Context) error {
 		if !allowed(c) {
@@ -187,6 +225,31 @@ func (t *Telegram) setupCallbacks(
 		go onDigest()
 		return c.Respond(&telebot.CallbackResponse{Text: "⏳ Формирую дайджест..."})
 	})
+	t.bot.Handle(&btnToggle, func(c telebot.Context) error {
+		if !allowed(c) {
+			return c.Respond()
+		}
+		url := c.Data()
+		if err := onToggleFeed(url); err != nil {
+			return c.Respond(&telebot.CallbackResponse{Text: "❌ Ошибка"})
+		}
+		feeds, _ := onFeeds()
+		return c.Edit("📋 <b>Управление фидами:</b>\nНажмите на кнопку, чтобы включить/выключить фид.",
+			t.makeFeedsKeyboard(feeds), telebot.ModeHTML)
+	})
+}
+
+// sourceLabel извлекает метку из URL.
+func sourceLabel(feedURL string) string {
+	if feedURL == "" {
+		return "@unknown"
+	}
+	parts := strings.Split(strings.Trim(feedURL, "/"), "/")
+	name := parts[len(parts)-1]
+	if name == "" {
+		return feedURL
+	}
+	return "@" + name
 }
 
 // splitMessage делит текст на части.

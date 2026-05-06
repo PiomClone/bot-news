@@ -108,6 +108,11 @@ func (a *app) run() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Синхронизация фидов из конфига в базу
+	if err := a.db.SyncFeeds(ctx, a.cfg.FeedURLs); err != nil {
+		slog.Error("ошибка синхронизации фидов", "error", err)
+	}
+
 	var wg sync.WaitGroup
 
 	// Health check HTTP-сервер
@@ -131,6 +136,8 @@ func (a *app) run() {
 					n, _ := a.db.GetUnsentCount(ctx, a.digestSince())
 					return n
 				},
+				func() ([]storage.Feed, error) { return a.db.GetAllFeeds(ctx) },
+				func(url string) error { return a.db.ToggleFeed(ctx, url) },
 			)
 		}()
 	}
@@ -237,7 +244,17 @@ func (a *app) runHealthServer(ctx context.Context) {
 }
 
 func (a *app) fetch(ctx context.Context) {
-	articles, err := a.fetcher.FetchAll(ctx, a.cfg.FeedURLs)
+	urls, err := a.db.GetActiveFeedURLs(ctx)
+	if err != nil {
+		slog.Error("ошибка получения списка фидов из базы", "error", err)
+		return
+	}
+	if len(urls) == 0 {
+		slog.Warn("нет активных фидов для сбора")
+		return
+	}
+
+	articles, err := a.fetcher.FetchAll(ctx, urls)
 	if err != nil {
 		slog.Error("ошибка получения фидов", "error", err)
 		return

@@ -23,6 +23,13 @@ type Article struct {
 	Sent        bool
 }
 
+type Feed struct {
+	URL     string
+	Title   string
+	Enabled bool
+	AddedAt time.Time
+}
+
 type DB struct {
 	db *sql.DB
 }
@@ -78,6 +85,13 @@ func (s *DB) migrate() error {
 			content    TEXT NOT NULL,
 			created_at INTEGER NOT NULL
 		);
+
+		CREATE TABLE IF NOT EXISTS feeds (
+			url        TEXT PRIMARY KEY,
+			title      TEXT DEFAULT '',
+			enabled    INTEGER DEFAULT 1,
+			added_at   INTEGER NOT NULL
+		);
 	`)
 	if err != nil {
 		return err
@@ -87,6 +101,72 @@ func (s *DB) migrate() error {
 	_, _ = s.db.Exec("ALTER TABLE articles ADD COLUMN feed_title TEXT DEFAULT ''")
 
 	return nil
+}
+
+func (s *DB) SyncFeeds(ctx context.Context, envURLs []string) error {
+	stmt, err := s.db.PrepareContext(ctx, `
+		INSERT OR IGNORE INTO feeds (url, added_at) VALUES (?, ?)
+	`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+
+	now := time.Now().Unix()
+	for _, url := range envURLs {
+		if url = strings.TrimSpace(url); url == "" {
+			continue
+		}
+		if _, err := stmt.ExecContext(ctx, url, now); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *DB) GetActiveFeedURLs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT url FROM feeds WHERE enabled = 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var urls []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		urls = append(urls, u)
+	}
+	return urls, nil
+}
+
+func (s *DB) GetAllFeeds(ctx context.Context) ([]Feed, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT url, title, enabled, added_at FROM feeds ORDER BY added_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var feeds []Feed
+	for rows.Next() {
+		var f Feed
+		var enabled int
+		var addedAt int64
+		if err := rows.Scan(&f.URL, &f.Title, &enabled, &addedAt); err != nil {
+			return nil, err
+		}
+		f.Enabled = enabled != 0
+		f.AddedAt = time.Unix(addedAt, 0)
+		feeds = append(feeds, f)
+	}
+	return feeds, nil
+}
+
+func (s *DB) ToggleFeed(ctx context.Context, url string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE feeds SET enabled = 1 - enabled WHERE url = ?`, url)
+	return err
 }
 
 func (s *DB) SaveDigest(ctx context.Context, content string) error {
