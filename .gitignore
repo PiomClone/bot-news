@@ -21,3 +21,4 @@ coverage.html
 # OS
 .DS_Store
 GEMINI.md
+.codex

@@ -3,6 +3,9 @@
 APP      := bot-news
 BUILD_DIR := build
 MAIN_PATH := ./cmd/$(APP)
+GOLANGCI_LINT := $(HOME)/go/bin/golangci-lint
+GOLANGCI_LINT_VERSION := v1.64.8
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
 GREEN  := \033[0;32m
 YELLOW := \033[1;33m
@@ -14,16 +17,16 @@ help: ## Показать справку
 
 install-tools: ## Установить инструменты разработки
 	@echo "$(GREEN)Установка golangci-lint...$(NC)"
-	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.8
+	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	@echo "$(GREEN)Установка goimports...$(NC)"
 	@go install golang.org/x/tools/cmd/goimports@latest
 	@echo "$(GREEN)Установка air...$(NC)"
 	@go install github.com/air-verse/air@latest
 
 build: ## Собрать бинарник
-	@echo "$(GREEN)Сборка...$(NC)"
+	@echo "$(GREEN)Сборка версии $(VERSION)...$(NC)"
 	@mkdir -p $(BUILD_DIR)
-	@go build -ldflags="-s -w" -o $(BUILD_DIR)/$(APP) $(MAIN_PATH)
+	@go build -ldflags="-s -w -X main.version=$(VERSION)" -o $(BUILD_DIR)/$(APP) $(MAIN_PATH)
 	@echo "$(GREEN)Готово: $(BUILD_DIR)/$(APP)$(NC)"
 
 test: ## Запустить тесты с покрытием
@@ -34,7 +37,10 @@ test: ## Запустить тесты с покрытием
 
 lint: ## Запустить golangci-lint
 	@echo "$(GREEN)Линтер...$(NC)"
-	@go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.5 run ./...
+	@test -x "$(GOLANGCI_LINT)" || (echo "golangci-lint not found at $(GOLANGCI_LINT). Run 'make install-tools' first."; exit 1)
+	@GO_BIN="$$(command -v go)"; \
+	test -x "$$GO_BIN" || (echo "go binary not found."; exit 1); \
+	PATH="$$(dirname "$$GO_BIN"):$$PATH" "$(GOLANGCI_LINT)" run ./cmd/... ./internal/...
 
 install-hooks: ## Установить git-хуки
 	@git config core.hooksPath .githooks
@@ -68,3 +74,8 @@ check-deps: ## Проверить зависимости
 
 clean: ## Удалить артефакты сборки
 	@rm -rf $(BUILD_DIR) tmp coverage.out coverage.html
+
+tag: ## Создать и отправить тег (использование: make tag v=1.0.0)
+	@if [ -z "$(v)" ]; then echo "Ошибка: v не задан. Пример: make tag v=1.0.0"; exit 1; fi
+	git tag -a v$(v) -m "Release v$(v)"
+	git push origin v$(v)
