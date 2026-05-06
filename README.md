@@ -38,6 +38,27 @@ make run
 make digest-now
 ```
 
+## Веб-панель (Dashboard)
+
+Бот имеет встроенную веб-панель для управления фидами и просмотра статистики. Она доступна по адресу `HEALTH_ADDR` (по умолчанию `:8080`).
+
+Для защиты панели используется **mTLS** (Mutual TLS) — авторизация по клиентскому сертификату.
+
+### Как настроить доступ:
+1. Сгенерируйте сертификаты: `make certs`.
+2. Установите файл `certs/client.p12` в свой браузер (подробнее в [INSTRUCTIONS_MTLS.md](./INSTRUCTIONS_MTLS.md)).
+3. Включите TLS в `.env`: `TLS_ENABLED=true`.
+4. Теперь админка доступна только по `https://your-host:8080/`.
+
+## Управление в Telegram
+
+Администратор (`TELEGRAM_ADMIN_ID`) может управлять ботом через команды:
+- `/feeds` — интерактивный список всех источников (включение/выключение кнопками).
+- `/fetch` — принудительный сбор новостей.
+- `/digest` — запуск формирования дайджеста.
+- `/stats` — статистика базы данных.
+- `/latest` — быстрый AI-обзор последних новостей.
+
 ## Конфигурация
 
 | Переменная | По умолчанию | Описание |
@@ -55,6 +76,10 @@ make digest-now
 | `TELEGRAM_ADMIN_ID` | — | ID пользователя, которому разрешены команды боту |
 | `TIMEZONE` | `Europe/Moscow` | Часовой пояс для дат и статистики |
 | `LOG_LEVEL` | `info` | Уровень логов (debug/info/warn/error) |
+| `TLS_ENABLED` | `false` | Включить HTTPS и mTLS для админки |
+| `SERVER_CERT` | `certs/server.crt` | Путь к сертификату сервера |
+| `SERVER_KEY` | `certs/server.key` | Путь к ключу сервера |
+| `CA_CERT` | `certs/ca.crt` | Путь к CA для проверки клиентов |
 
 ## Деплой через Docker Compose
 
@@ -133,19 +158,20 @@ make check           # lint + test вместе
 1. Убедитесь, что все изменения закоммичены и запушены в `master`.
 2. Создайте новый тег:
    ```bash
-   make tag v=1.0.0
+   make tag v=1.1.0
    ```
 3. GitHub Actions автоматически соберет бинарники под все платформы и создаст страницу релиза.
 
 ## Структура проекта
 
 ```
-cmd/bot-news/main.go          — точка входа, инициализация, cron, graceful shutdown
+cmd/bot-news/main.go          — точка входа, инициализация, крон, graceful shutdown
+internal/app/                 — основная логика приложения и веб-сервер
 internal/config/              — загрузка конфига из .env и окружения
 internal/feed/                — сбор RSS (concurrent, retry per feed)
-internal/storage/             — SQLite: сохранение статей, дедупликация по GUID
+internal/storage/             — SQLite: сохранение статей, управление фидами
 internal/summarizer/          — SimpleSummarizer (список) и GroqSummarizer (AI)
-internal/notifier/            — отправка в Telegram (telebot.v3, retry)
+internal/notifier/            — отправка в Telegram (telebot.v3, команды)
 internal/retry/               — exponential backoff retry
 internal/logger/              — инициализация slog (JSON, уровни)
 deploy/                       — systemd unit, install.sh, deploy.sh

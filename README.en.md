@@ -38,6 +38,27 @@ For an immediate test (fetch RSS + send digest right now):
 make digest-now
 ```
 
+## Web Dashboard
+
+The bot has a built-in web dashboard for managing feeds and viewing statistics. It is available at `HEALTH_ADDR` (default `:8080`).
+
+The panel is protected using **mTLS** (Mutual TLS) — authorization by client certificate.
+
+### How to set up access:
+1. Generate certificates: `make certs`.
+2. Install the `certs/client.p12` file into your browser (more details in [INSTRUCTIONS_MTLS.md](./INSTRUCTIONS_MTLS.md)).
+3. Enable TLS in `.env`: `TLS_ENABLED=true`.
+4. Now the dashboard is available only at `https://your-host:8080/`.
+
+## Telegram Management
+
+The administrator (`TELEGRAM_ADMIN_ID`) can manage the bot via commands:
+- `/feeds` — interactive list of all sources (enable/disable with buttons).
+- `/fetch` — force news collection.
+- `/digest` — trigger digest generation.
+- `/stats` — database statistics.
+- `/latest` — quick AI overview of the latest news.
+
 ## Configuration
 
 | Variable | Default | Description |
@@ -55,6 +76,10 @@ make digest-now
 | `TELEGRAM_ADMIN_ID` | — | User ID allowed to send commands to the bot |
 | `TIMEZONE` | `Europe/Moscow` | Timezone for dates and statistics |
 | `LOG_LEVEL` | `info` | Log level (debug/info/warn/error) |
+| `TLS_ENABLED` | `false` | Enable HTTPS and mTLS for dashboard |
+| `SERVER_CERT` | `certs/server.crt` | Path to server certificate |
+| `SERVER_KEY` | `certs/server.key` | Path to server key |
+| `CA_CERT` | `certs/ca.crt` | Path to CA for client verification |
 
 ## Deployment via Docker Compose
 
@@ -133,7 +158,7 @@ To release a new version:
 1. Ensure all changes are committed and pushed to `master`.
 2. Create a new tag:
    ```bash
-   make tag v=1.0.0
+   make tag v=1.1.0
    ```
 3. GitHub Actions will automatically build binaries for all platforms and create a release page.
 
@@ -141,11 +166,12 @@ To release a new version:
 
 ```
 cmd/bot-news/main.go          — entry point, initialization, cron, graceful shutdown
+internal/app/                 — core application logic and web server
 internal/config/              — config loading from .env and environment variables
 internal/feed/                — RSS fetching (concurrent, retry per feed)
-internal/storage/             — SQLite: saving articles, deduplication by GUID
+internal/storage/             — SQLite: saving articles, feed management
 internal/summarizer/          — SimpleSummarizer (list) and GroqSummarizer (AI)
-internal/notifier/            — Telegram notification (telebot.v3, retry)
+internal/notifier/            — Telegram notification (telebot.v3, commands)
 internal/retry/               — exponential backoff retry
 internal/logger/              — slog initialization (JSON, levels)
 deploy/                       — systemd unit, install.sh, deploy.sh
