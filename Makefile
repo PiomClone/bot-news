@@ -1,4 +1,4 @@
-.PHONY: help build test lint lint-fix format run dev clean install-tools digest-now check-deps deploy-h2
+.PHONY: help build test lint lint-fix format run dev clean install-tools digest-now check-deps deploy-h2 install-hooks
 
 APP      := bot-news
 BUILD_DIR := build
@@ -34,7 +34,11 @@ test: ## Запустить тесты с покрытием
 
 lint: ## Запустить golangci-lint
 	@echo "$(GREEN)Линтер...$(NC)"
-	@golangci-lint run --timeout=5m
+	@go run github.com/golangci/golangci-lint/cmd/golangci-lint@v1.64.5 run ./...
+
+install-hooks: ## Установить git-хуки
+	@git config core.hooksPath .githooks
+	@echo "$(GREEN)Git-хуки установлены из .githooks/$(NC)"
 
 lint-fix: ## Автоисправление проблем кода
 	@gofmt -w .
