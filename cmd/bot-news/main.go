@@ -35,9 +35,17 @@ type app struct {
 	notif   *notifier.Telegram
 }
 
+var version = "dev"
+
 func main() {
 	runNow := flag.Bool("run-digest-now", false, "немедленно отправить дайджест и выйти")
+	showVersion := flag.Bool("version", false, "показать версию и выйти")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("bot-news version %s\n", version)
+		return
+	}
 
 	logger.Init("bot-news")
 
