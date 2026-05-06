@@ -2,8 +2,11 @@ package app
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"html"
+	"html/template"
 	"log/slog"
 	"net/http"
 	"os"
@@ -79,7 +82,7 @@ func (a *App) Run() {
 
 	var wg sync.WaitGroup
 
-	// Health check HTTP-сервер
+	// Health check & Dashboard HTTP-сервер
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -151,11 +154,21 @@ func (a *App) Run() {
 
 func (a *App) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		// Если включен TLS (mTLS), то проверка токена не требуется,
+		// так как авторизация прошла на уровне протокола.
+		if a.cfg.TLSEnabled {
+			next(w, r)
+			return
+		}
+
 		if a.cfg.TriggerSecret != "" {
 			token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
 			if token != a.cfg.TriggerSecret {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
+				// Также проверяем в query param для удобства доступа к дашборду
+				if r.URL.Query().Get("token") != a.cfg.TriggerSecret {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
 			}
 		}
 		next(w, r)
@@ -164,27 +177,41 @@ func (a *App) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 
 func (a *App) runHealthServer(ctx context.Context) {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprint(w, "ok")
 	})
-	mux.HandleFunc("/trigger/fetch", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
+
+	mux.HandleFunc("GET /{$}", a.authMiddleware(a.handleDashboard(ctx)))
+
+	mux.HandleFunc("POST /trigger/fetch", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		go a.Fetch(ctx)
-		w.WriteHeader(http.StatusAccepted)
-		fmt.Fprint(w, "fetch triggered")
-	}))
-	mux.HandleFunc("/trigger/digest", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
+		target := "/"
+		if !a.cfg.TLSEnabled {
+			target += "?token=" + r.URL.Query().Get("token")
 		}
+		http.Redirect(w, r, target, http.StatusSeeOther)
+	}))
+
+	mux.HandleFunc("POST /trigger/digest", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		go a.Digest(ctx)
-		w.WriteHeader(http.StatusAccepted)
-		fmt.Fprint(w, "digest triggered")
+		target := "/"
+		if !a.cfg.TLSEnabled {
+			target += "?token=" + r.URL.Query().Get("token")
+		}
+		http.Redirect(w, r, target, http.StatusSeeOther)
+	}))
+
+	mux.HandleFunc("POST /trigger/toggle", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		url := r.FormValue("url")
+		if url != "" {
+			_ = a.db.ToggleFeed(ctx, url)
+		}
+		target := "/"
+		if !a.cfg.TLSEnabled {
+			target += "?token=" + r.URL.Query().Get("token")
+		}
+		http.Redirect(w, r, target, http.StatusSeeOther)
 	}))
 
 	srv := &http.Server{
@@ -194,6 +221,22 @@ func (a *App) runHealthServer(ctx context.Context) {
 		WriteTimeout: 5 * time.Second,
 	}
 
+	if a.cfg.TLSEnabled {
+		caCert, err := os.ReadFile(a.cfg.CACert)
+		if err != nil {
+			slog.Error("не удалось прочитать CA сертификат", "path", a.cfg.CACert, "error", err)
+			os.Exit(1)
+		}
+		caCertPool := x509.NewCertPool()
+		caCertPool.AppendCertsFromPEM(caCert)
+
+		srv.TLSConfig = &tls.Config{
+			ClientAuth: tls.RequireAndVerifyClientCert,
+			ClientCAs:  caCertPool,
+			MinVersion: tls.VersionTLS12,
+		}
+	}
+
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -201,11 +244,165 @@ func (a *App) runHealthServer(ctx context.Context) {
 		_ = srv.Shutdown(shutCtx)
 	}()
 
-	slog.Info("health check запущен", "addr", a.cfg.HealthAddr)
-	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		slog.Error("health server", "error", err)
+	if a.cfg.TLSEnabled {
+		slog.Info("web dashboard запущен (HTTPS + mTLS)", "addr", a.cfg.HealthAddr)
+		if err := srv.ListenAndServeTLS(a.cfg.ServerCert, a.cfg.ServerKey); err != nil && err != http.ErrServerClosed {
+			slog.Error("TLS server", "error", err)
+		}
+	} else {
+		slog.Info("web dashboard запущен (HTTP)", "addr", a.cfg.HealthAddr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("health server", "error", err)
+		}
 	}
 }
+
+func (a *App) handleDashboard(ctx context.Context) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		stats, _ := a.db.GetStats(ctx)
+		feeds, _ := a.db.GetAllFeeds(ctx)
+		token := r.URL.Query().Get("token")
+
+		data := struct {
+			Stats      storage.Stats
+			Feeds      []storage.Feed
+			Version    string
+			Token      string
+			TLSEnabled bool
+		}{
+			Stats:      stats,
+			Feeds:      feeds,
+			Version:    "1.1.0",
+			Token:      token,
+			TLSEnabled: a.cfg.TLSEnabled,
+		}
+
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_ = dashboardTmpl.Execute(w, data)
+	}
+}
+
+var dashboardTmpl = template.Must(template.New("dashboard").Parse(`
+<!DOCTYPE html>
+<html lang="ru" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>bot-news Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; }
+    </style>
+</head>
+<body class="p-4 md:p-8 font-sans">
+    <div class="max-w-4xl mx-auto">
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+            <h1 class="text-3xl font-bold text-sky-400 flex items-center gap-3">
+                bot-news
+                <span class="text-xs font-normal bg-slate-800 text-slate-400 px-2 py-1 rounded border border-slate-700">
+                    v{{.Version}}
+                </span>
+            </h1>
+            <div class="flex gap-2">
+                <form action="/trigger/fetch{{if not .TLSEnabled}}?token={{.Token}}{{end}}" method="POST">
+                    <button class="bg-sky-600 hover:bg-sky-500 px-4 py-2 rounded 
+                        text-sm font-medium transition flex items-center gap-2">
+                        🔄 Собрать
+                    </button>
+                </form>
+                <form action="/trigger/digest{{if not .TLSEnabled}}?token={{.Token}}{{end}}" method="POST">
+                    <button class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded 
+                        text-sm font-medium transition flex items-center gap-2">
+                        📨 Дайджест
+                    </button>
+                </form>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+            <div class="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
+                <div class="text-slate-400 text-xs uppercase tracking-wider mb-1">Всего статей</div>
+                <div class="text-2xl font-bold">{{.Stats.TotalArticles}}</div>
+            </div>
+            <div class="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
+                <div class="text-slate-400 text-xs uppercase tracking-wider mb-1">Отправлено</div>
+                <div class="text-2xl font-bold text-emerald-400">{{.Stats.SentArticles}}</div>
+            </div>
+            <div class="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
+                <div class="text-slate-400 text-xs uppercase tracking-wider mb-1">Последний сбор</div>
+                <div class="text-sm font-medium pt-1">
+                    {{if .Stats.LastFetchedAt.IsZero}}
+                        <span class="text-slate-500 italic">никогда</span>
+                    {{else}}
+                        {{.Stats.LastFetchedAt.Format "02 Jan 15:04"}}
+                    {{end}}
+                </div>
+            </div>
+        </div>
+
+        <div class="bg-slate-800/30 rounded-xl border border-slate-700 overflow-hidden shadow-xl">
+            <div class="px-6 py-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
+                <h2 class="text-lg font-semibold flex items-center gap-2">📡 Источники RSS</h2>
+                <span class="text-xs text-slate-500">{{len .Feeds}} фидов</span>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-left">
+                    <thead class="bg-slate-900/50 text-slate-400 text-xs uppercase tracking-tighter">
+                        <tr>
+                            <th class="px-6 py-3 font-medium">Статус</th>
+                            <th class="px-6 py-3 font-medium">Источник</th>
+                            <th class="px-6 py-3 font-medium text-right">Действие</th>
+                        </tr>
+                    </thead>
+                    <tbody class="divide-y divide-slate-700/50">
+                        {{range .Feeds}}
+                        <tr class="hover:bg-slate-700/20 transition-colors group">
+                            <td class="px-6 py-4">
+                                {{if .Enabled}}
+                                <span class="inline-flex items-center rounded-full bg-emerald-500/10 
+                                    px-2.5 py-0.5 text-xs font-medium text-emerald-400 
+                                    ring-1 ring-inset ring-emerald-500/20">
+                                    Активен
+                                </span>
+                                {{else}}
+                                <span class="inline-flex items-center rounded-full bg-slate-500/10 
+                                    px-2.5 py-0.5 text-xs font-medium text-slate-400 
+                                    ring-1 ring-inset ring-slate-500/20">
+                                    Пауза
+                                </span>
+                                {{end}}
+                            </td>
+                            <td class="px-6 py-4 text-xs font-medium">
+                                <div class="font-medium text-slate-200 group-hover:text-sky-400 transition-colors">
+                                    {{if .Title}}{{.Title}}{{else}}Без названия{{end}}
+                                </div>
+                                <div class="text-slate-500 truncate max-w-xs md:max-w-md mt-0.5">
+                                    {{.URL}}
+                                </div>
+                            </td>
+                            <td class="px-6 py-4 text-right">
+                                <form action="/trigger/toggle{{if not $.TLSEnabled}}?token={{$.Token}}{{end}}" method="POST">
+                                    <input type="hidden" name="url" value="{{.URL}}">
+                                    <button class="text-sky-400 hover:text-sky-300 text-sm font-medium 
+                                        underline underline-offset-4 decoration-sky-400/30">
+                                        {{if .Enabled}}Выключить{{else}}Включить{{end}}
+                                    </button>
+                                </form>
+                            </td>
+                        </tr>
+                        {{end}}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <footer class="mt-12 text-center text-slate-600 text-xs border-t border-slate-800 pt-8">
+            &copy; 2026 bot-news · Работает на Go {{.Version}} · Статус: OK
+        </footer>
+    </div>
+</body>
+</html>
+`))
 
 func (a *App) Fetch(ctx context.Context) {
 	urls, err := a.db.GetActiveFeedURLs(ctx)

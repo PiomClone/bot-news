@@ -79,3 +79,6 @@ tag: ## Создать и отправить тег (использование:
 	@if [ -z "$(v)" ]; then echo "Ошибка: v не задан. Пример: make tag v=1.0.0"; exit 1; fi
 	git tag -a v$(v) -m "Release v$(v)"
 	git push origin v$(v)
+
+certs: ## Сгенерировать TLS сертификаты для mTLS
+	@bash scripts/gen-certs.sh

@@ -13,9 +13,13 @@ import (
 
 const groqBaseURL = "https://api.groq.com/openai/v1"
 
+type chatClient interface {
+	CreateChatCompletion(ctx context.Context, request openai.ChatCompletionRequest) (openai.ChatCompletionResponse, error)
+}
+
 // GroqSummarizer использует Groq API (OpenAI-совместимый) для AI-саммари.
 type GroqSummarizer struct {
-	client *openai.Client
+	client chatClient
 	model  string
 	limits string
 }

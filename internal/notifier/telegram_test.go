@@ -1,7 +1,10 @@
 package notifier
 
 import (
+	"strings"
 	"testing"
+
+	"bot-news/internal/storage"
 )
 
 func TestParseRecipient(t *testing.T) {
@@ -55,5 +58,53 @@ func TestSplitMessage(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSourceLabel(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://t.me/s/channel", "@channel"},
+		{"https://rsshub.app/telegram/channel/name", "@name"},
+		{"http://example.com/feed.xml", "@feed.xml"},
+		{"", "@unknown"},
+		{"invalid-url", "@invalid-url"},
+	}
+
+	for _, tt := range tests {
+		if got := sourceLabel(tt.url); got != tt.want {
+			t.Errorf("sourceLabel(%q) = %q, want %q", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestMakeFeedsKeyboard(t *testing.T) {
+	tg := &Telegram{}
+	feeds := []storage.Feed{
+		{URL: "http://f1", Title: "Feed 1", Enabled: true},
+		{URL: "http://f2", Title: "", Enabled: false},
+	}
+
+	kb := tg.makeFeedsKeyboard(feeds)
+	if kb == nil {
+		t.Fatal("keyboard is nil")
+	}
+
+	if len(kb.InlineKeyboard) != 2 {
+		t.Errorf("ожидали 2 строки кнопок, получили %d", len(kb.InlineKeyboard))
+	}
+
+	// Проверяем текст первой кнопки
+	btn1 := kb.InlineKeyboard[0][0]
+	if !strings.Contains(btn1.Text, "✅") || !strings.Contains(btn1.Text, "Feed 1") {
+		t.Errorf("неверный текст кнопки 1: %q", btn1.Text)
+	}
+
+	// Проверяем текст второй кнопки (должен использовать sourceLabel)
+	btn2 := kb.InlineKeyboard[1][0]
+	if !strings.Contains(btn2.Text, "❌") || !strings.Contains(btn2.Text, "@f2") {
+		t.Errorf("неверный текст кнопки 2: %q", btn2.Text)
 	}
 }

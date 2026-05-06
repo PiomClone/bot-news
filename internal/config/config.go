@@ -20,9 +20,16 @@ type Config struct {
 	TriggerSecret     string // Bearer-токен для /trigger/* (опционально)
 	TelegramAdminID   int64  // ID пользователя, которому разрешены команды боту
 	Timezone          string // часовой пояс для дайджеста, например "Europe/Moscow"
+
+	TLSEnabled bool   // включить HTTPS и mTLS
+	ServerCert string // путь к сертификату сервера
+	ServerKey  string // путь к ключу сервера
+	CACert     string // путь к корневому сертификату (CA) для проверки клиентов
 }
 
 func LoadFromEnv() Config {
+	tlsEnabled, _ := strconv.ParseBool(os.Getenv("TLS_ENABLED"))
+
 	cfg := Config{
 		TelegramBotToken:  os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramChannelID: os.Getenv("TELEGRAM_CHANNEL_ID"),
@@ -33,6 +40,11 @@ func LoadFromEnv() Config {
 		HealthAddr:        getEnvOrDefault("HEALTH_ADDR", ":8080"),
 		TriggerSecret:     os.Getenv("TRIGGER_SECRET"),
 		Timezone:          getEnvOrDefault("TIMEZONE", "Europe/Moscow"),
+
+		TLSEnabled: tlsEnabled,
+		ServerCert: getEnvOrDefault("SERVER_CERT", "certs/server.crt"),
+		ServerKey:  getEnvOrDefault("SERVER_KEY", "certs/server.key"),
+		CACert:     getEnvOrDefault("CA_CERT", "certs/ca.crt"),
 	}
 	if v, err := strconv.ParseInt(os.Getenv("TELEGRAM_ADMIN_ID"), 10, 64); err == nil {
 		cfg.TelegramAdminID = v

@@ -91,3 +91,30 @@ func TestSimpleSummarizerHeader(t *testing.T) {
 		t.Errorf("нет заголовка дайджеста: %s", text)
 	}
 }
+
+func TestGetEmoji(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"", "🔹"},
+		{"http://test", summarizer.GetEmoji("http://test")}, // Deterministic
+	}
+
+	for _, tt := range tests {
+		got := summarizer.GetEmoji(tt.url)
+		if got == "" {
+			t.Errorf("GetEmoji(%q) вернул пустую строку", tt.url)
+		}
+		if tt.want != "" && got != tt.want {
+			t.Errorf("GetEmoji(%q) = %q, want %q", tt.url, got, tt.want)
+		}
+	}
+}
+
+func TestGetLimits(t *testing.T) {
+	s := summarizer.NewSimple()
+	if got := s.GetLimits(); got != "" {
+		t.Errorf("SimpleSummarizer.GetLimits() = %q, want empty", got)
+	}
+}

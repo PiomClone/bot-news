@@ -18,6 +18,10 @@ coverage.html
 .vscode/
 .history/
 
+# Сертификаты
+certs/
+*.p12
+
 # OS
 .DS_Store
 GEMINI.md
