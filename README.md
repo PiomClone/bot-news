@@ -116,6 +116,7 @@ journalctl -u bot-news --since "1h ago"
 
 ```bash
 make install-tools   # установить golangci-lint, goimports, air
+make install-hooks   # установить git-хуки для автоматической проверки перед пушем
 make dev             # запуск с автоперезагрузкой при изменении файлов
 make test            # тесты с покрытием → coverage.html
 make lint            # линтер
