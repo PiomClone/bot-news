@@ -346,7 +346,7 @@ func (a *App) handleDashboard(ctx context.Context) http.HandlerFunc {
 		data := struct {
 			Stats       storage.Stats
 			DigestCount int
-			AILimits    string
+			AILimits    template.HTML
 			Feeds       []storage.Feed
 			Version     string
 			Token       string
@@ -354,11 +354,15 @@ func (a *App) handleDashboard(ctx context.Context) http.HandlerFunc {
 		}{
 			Stats:       stats,
 			DigestCount: digestCount,
-			AILimits:    a.sum.GetLimits(),
+			AILimits:    template.HTML(a.sum.GetLimits()), // nolint:gosec
 			Feeds:       feeds,
 			Version:     "1.1.0",
 			Token:       token,
 			TLSEnabled:  a.cfg.TLSEnabled,
+		}
+
+		if data.AILimits == "" {
+			data.AILimits = "🤖 <i>Статистика AI будет доступна после первого запроса (дайджест или Latest)</i>"
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
