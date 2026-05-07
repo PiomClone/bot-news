@@ -122,7 +122,7 @@ func TestTelegram_Send(t *testing.T) {
 	defer server.Close()
 
 	// Мокаем эндпоинт sendMessage
-	mux.HandleFunc("/bot123/sendMessage", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/bot123/sendMessage", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"ok": true,
@@ -133,8 +133,8 @@ func TestTelegram_Send(t *testing.T) {
 	})
 
 	bot, err := telebot.NewBot(telebot.Settings{
-		Token:  "123",
-		URL:    server.URL,
+		Token:   "123",
+		URL:     server.URL,
 		Offline: true,
 	})
 	if err != nil {
@@ -168,7 +168,7 @@ func TestTelegram_Send(t *testing.T) {
 	})
 }
 
-func TestTelegram_ListenCommands(t *testing.T) {
+func TestTelegram_ListenCommands(_ *testing.T) {
 	// Мы не можем легко протестировать polling, но можем протестировать инициализацию команд.
 	bot, _ := telebot.NewBot(telebot.Settings{
 		Token:   "123",

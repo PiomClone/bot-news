@@ -97,7 +97,7 @@ func TestApp_Orchestration(t *testing.T) {
 		}
 	})
 
-	t.Run("Fetch No Feeds", func(t *testing.T) {
+	t.Run("Fetch No Feeds", func(_ *testing.T) {
 		// Удалим все фиды
 		_ = db.DeleteFeed(ctx, "http://f1")
 		app.Fetch(ctx)

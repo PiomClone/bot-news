@@ -26,7 +26,7 @@ func TestParseLevel(t *testing.T) {
 	}
 }
 
-func TestInit(t *testing.T) {
+func TestInit(_ *testing.T) {
 	// Сохраним текущий дефолтный логгер
 	old := slog.Default()
 	defer slog.SetDefault(old)
@@ -36,7 +36,7 @@ func TestInit(t *testing.T) {
 
 	Init("test-service")
 
-	// Мы не можем легко проверить внутренности SetDefault, 
+	// Мы не можем легко проверить внутренности SetDefault,
 	// но мы можем проверить, что вызов не падает.
 	slog.Info("test log after init")
 }

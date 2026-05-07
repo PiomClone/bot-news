@@ -346,6 +346,7 @@ func (a *App) handleDashboard(ctx context.Context) http.HandlerFunc {
 		data := struct {
 			Stats       storage.Stats
 			DigestCount int
+			AILimits    string
 			Feeds       []storage.Feed
 			Version     string
 			Token       string
@@ -353,6 +354,7 @@ func (a *App) handleDashboard(ctx context.Context) http.HandlerFunc {
 		}{
 			Stats:       stats,
 			DigestCount: digestCount,
+			AILimits:    a.sum.GetLimits(),
 			Feeds:       feeds,
 			Version:     "1.1.0",
 			Token:       token,
@@ -428,7 +430,7 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`
             </form>
         </div>
 
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
             <div class="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
                 <div class="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Всего собрано</div>
                 <div class="text-2xl font-bold">{{.Stats.TotalArticles}}</div>
@@ -452,6 +454,15 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`
                 </div>
             </div>
         </div>
+
+        {{if .AILimits}}
+        <div class="mb-8 px-4 py-2 bg-indigo-500/10 border border-indigo-500/20 rounded-lg 
+            text-xs text-indigo-300 flex items-center gap-2">
+            {{.AILimits}}
+        </div>
+        {{else}}
+        <div class="mb-8"></div>
+        {{end}}
 
         <div class="bg-slate-800/30 rounded-xl border border-slate-700 overflow-hidden shadow-xl">
             <div class="px-6 py-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
