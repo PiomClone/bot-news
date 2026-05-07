@@ -28,13 +28,31 @@ import (
 const timeFmt = "02 Jan 15:04 MST"
 const digestLookback = 12 * time.Hour
 
+// Notifier — интерфейс для отправки уведомлений.
+type Notifier interface {
+	Send(ctx context.Context, text string) error
+	SendToAdmin(ctx context.Context, adminID int64, text string) error
+	ListenCommands(ctx context.Context, adminID int64,
+		onFetch, onDigest func(),
+		onStats, onLatest func() string,
+		onDigestCount func() int,
+		onFeeds func() ([]storage.Feed, error),
+		onToggleFeed func(string) error,
+	)
+}
+
+// Fetcher — интерфейс для получения статей из RSS.
+type Fetcher interface {
+	FetchAll(ctx context.Context, urls []string) ([]feed.FetchResult, error)
+}
+
 // App — основной оркестратор приложения.
 type App struct {
 	cfg     config.Config
 	db      *storage.DB
-	fetcher *feed.Fetcher
+	fetcher Fetcher
 	sum     summarizer.Summarizer
-	notif   *notifier.Telegram
+	notif   Notifier
 }
 
 func NewApp(cfg config.Config) (*App, error) {
@@ -65,6 +83,18 @@ func NewApp(cfg config.Config) (*App, error) {
 		sum:     sum,
 		notif:   notif,
 	}, nil
+}
+
+// NewAppWithDeps используется в тестах для инъекции зависимостей.
+func NewAppWithDeps(cfg config.Config, db *storage.DB, fetcher Fetcher, sum summarizer.Summarizer,
+	notif Notifier) *App {
+	return &App{
+		cfg:     cfg,
+		db:      db,
+		fetcher: fetcher,
+		sum:     sum,
+		notif:   notif,
+	}
 }
 
 func (a *App) Close() error {
@@ -175,6 +205,16 @@ func (a *App) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (a *App) redirect(w http.ResponseWriter, r *http.Request) {
+	target := "/"
+	if !a.cfg.TLSEnabled {
+		if token := r.URL.Query().Get("token"); token != "" {
+			target += "?token=" + token
+		}
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
 func (a *App) runHealthServer(ctx context.Context) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -183,36 +223,7 @@ func (a *App) runHealthServer(ctx context.Context) {
 	})
 
 	mux.HandleFunc("GET /{$}", a.authMiddleware(a.handleDashboard(ctx)))
-
-	mux.HandleFunc("POST /trigger/fetch", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		go a.Fetch(ctx)
-		target := "/"
-		if !a.cfg.TLSEnabled {
-			target += "?token=" + r.URL.Query().Get("token")
-		}
-		http.Redirect(w, r, target, http.StatusSeeOther)
-	}))
-
-	mux.HandleFunc("POST /trigger/digest", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		go a.Digest(ctx)
-		target := "/"
-		if !a.cfg.TLSEnabled {
-			target += "?token=" + r.URL.Query().Get("token")
-		}
-		http.Redirect(w, r, target, http.StatusSeeOther)
-	}))
-
-	mux.HandleFunc("POST /trigger/toggle", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		url := r.FormValue("url")
-		if url != "" {
-			_ = a.db.ToggleFeed(ctx, url)
-		}
-		target := "/"
-		if !a.cfg.TLSEnabled {
-			target += "?token=" + r.URL.Query().Get("token")
-		}
-		http.Redirect(w, r, target, http.StatusSeeOther)
-	}))
+	a.registerTriggers(ctx, mux)
 
 	srv := &http.Server{
 		Addr:         a.cfg.HealthAddr,
@@ -255,6 +266,74 @@ func (a *App) runHealthServer(ctx context.Context) {
 			slog.Error("health server", "error", err)
 		}
 	}
+}
+
+func (a *App) registerTriggers(ctx context.Context, mux *http.ServeMux) {
+	mux.HandleFunc("POST /trigger/fetch", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		go a.Fetch(ctx)
+		a.redirect(w, r)
+	}))
+
+	mux.HandleFunc("POST /trigger/digest", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		go a.Digest(ctx)
+		a.redirect(w, r)
+	}))
+
+	mux.HandleFunc("POST /trigger/toggle", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if url := r.FormValue("url"); url != "" {
+			_ = a.db.ToggleFeed(ctx, url)
+		}
+		a.redirect(w, r)
+	}))
+
+	mux.HandleFunc("POST /trigger/add", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if url := strings.TrimSpace(r.FormValue("url")); url != "" {
+			_ = a.db.AddFeed(ctx, url)
+		}
+		a.redirect(w, r)
+	}))
+
+	mux.HandleFunc("POST /trigger/delete", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		if url := r.FormValue("url"); url != "" {
+			_ = a.db.DeleteFeed(ctx, url)
+		}
+		a.redirect(w, r)
+	}))
+
+	mux.HandleFunc("POST /trigger/update-title", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		url := r.FormValue("url")
+		title := strings.TrimSpace(r.FormValue("title"))
+		if url != "" && title != "" {
+			_ = a.db.UpdateFeedTitle(ctx, url, title)
+		}
+		a.redirect(w, r)
+	}))
+
+	mux.HandleFunc("POST /trigger/latest-bot", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		go func() {
+			text := a.LatestText(ctx)
+			_ = a.notif.SendToAdmin(ctx, a.cfg.TelegramAdminID, text)
+		}()
+		a.redirect(w, r)
+	}))
+
+	mux.HandleFunc("POST /trigger/digest-bot", a.authMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		go func() {
+			since := a.digestSince()
+			articles, _ := a.db.GetUnsent(ctx, since)
+			if len(articles) == 0 {
+				_ = a.notif.SendToAdmin(ctx, a.cfg.TelegramAdminID, "📭 Новых статей нет.")
+				return
+			}
+			text, err := a.sum.Summarize(ctx, articles)
+			if err != nil {
+				text, _ = summarizer.NewSimple().Summarize(ctx, articles)
+			}
+			text = "🔔 <b>Ваш персональный дайджест:</b>\n\n" + text
+			_ = a.notif.SendToAdmin(ctx, a.cfg.TelegramAdminID, text)
+		}()
+		a.redirect(w, r)
+	}))
 }
 
 func (a *App) handleDashboard(ctx context.Context) http.HandlerFunc {
@@ -304,6 +383,20 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`
                 </span>
             </h1>
             <div class="flex gap-2">
+                <form action="/trigger/latest-bot{{if not .TLSEnabled}}?token={{.Token}}{{end}}" method="POST">
+                    <button class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded 
+                        text-sm font-medium transition flex items-center gap-2" 
+                        title="Отправить последние новости в бота">
+                        🤖 Latest
+                    </button>
+                </form>
+                <form action="/trigger/digest-bot{{if not .TLSEnabled}}?token={{.Token}}{{end}}" method="POST">
+                    <button class="bg-violet-600 hover:bg-violet-500 px-4 py-2 rounded 
+                        text-sm font-medium transition flex items-center gap-2" 
+                        title="Отправить персональный дайджест в бота">
+                        👤 Digest
+                    </button>
+                </form>
                 <form action="/trigger/fetch{{if not .TLSEnabled}}?token={{.Token}}{{end}}" method="POST">
                     <button class="bg-sky-600 hover:bg-sky-500 px-4 py-2 rounded 
                         text-sm font-medium transition flex items-center gap-2">
@@ -312,12 +405,25 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`
                 </form>
                 <form action="/trigger/digest{{if not .TLSEnabled}}?token={{.Token}}{{end}}" method="POST">
                     <button class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded 
-                        text-sm font-medium transition flex items-center gap-2">
-                        📨 Дайджест
+                        text-sm font-medium transition flex items-center gap-2" 
+                        title="Отправить дайджест в КАНАЛ">
+                        📢 Канал
                     </button>
                 </form>
             </div>
         </header>
+
+        <div class="mb-8">
+            <form action="/trigger/add{{if not .TLSEnabled}}?token={{.Token}}{{end}}" method="POST" class="flex gap-2">
+                <input type="url" name="url" placeholder="URL нового RSS-фида" required
+                    class="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-4 py-2 text-sm 
+                        focus:outline-none focus:ring-2 focus:ring-sky-500">
+                <button type="submit" 
+                    class="bg-sky-600 hover:bg-sky-500 px-6 py-2 rounded-lg text-sm font-medium transition">
+                    Добавить фид
+                </button>
+            </form>
+        </div>
 
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
             <div class="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
@@ -373,21 +479,39 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`
                                 {{end}}
                             </td>
                             <td class="px-6 py-4 text-xs font-medium">
-                                <div class="font-medium text-slate-200 group-hover:text-sky-400 transition-colors">
-                                    {{if .Title}}{{.Title}}{{else}}Без названия{{end}}
-                                </div>
+                                <form action="/trigger/update-title{{if not $.TLSEnabled}}?token={{$.Token}}{{end}}" 
+                                    method="POST" class="group/title flex items-center gap-2">
+                                    <input type="hidden" name="url" value="{{.URL}}">
+                                    <input type="text" name="title" 
+                                        value="{{if .Title}}{{.Title}}{{else}}Без названия{{end}}" 
+                                        class="bg-transparent border-b border-transparent hover:border-slate-600 
+                                        focus:border-sky-500 focus:outline-none transition-colors font-medium 
+                                        text-slate-200 group-hover:text-sky-400 py-0.5 px-0 w-full"
+                                        onchange="this.form.submit()">
+                                </form>
                                 <div class="text-slate-500 truncate max-w-xs md:max-w-md mt-0.5">
                                     {{.URL}}
                                 </div>
                             </td>
                             <td class="px-6 py-4 text-right">
-                                <form action="/trigger/toggle{{if not $.TLSEnabled}}?token={{$.Token}}{{end}}" method="POST">
-                                    <input type="hidden" name="url" value="{{.URL}}">
-                                    <button class="text-sky-400 hover:text-sky-300 text-sm font-medium 
-                                        underline underline-offset-4 decoration-sky-400/30">
-                                        {{if .Enabled}}Выключить{{else}}Включить{{end}}
-                                    </button>
-                                </form>
+                                <div class="flex justify-end gap-3">
+                                    <form action="/trigger/toggle{{if not $.TLSEnabled}}?token={{$.Token}}{{end}}" 
+                                        method="POST">
+                                        <input type="hidden" name="url" value="{{.URL}}">
+                                        <button class="text-sky-400 hover:text-sky-300 text-sm font-medium 
+                                            underline underline-offset-4 decoration-sky-400/30">
+                                            {{if .Enabled}}Выключить{{else}}Включить{{end}}
+                                        </button>
+                                    </form>
+                                    <form action="/trigger/delete{{if not $.TLSEnabled}}?token={{$.Token}}{{end}}" 
+                                        method="POST" onsubmit="return confirm('Удалить этот источник?')">
+                                        <input type="hidden" name="url" value="{{.URL}}">
+                                        <button class="text-rose-400 hover:text-rose-300 text-sm font-medium 
+                                            underline underline-offset-4 decoration-rose-400/30">
+                                            Удалить
+                                        </button>
+                                    </form>
+                                </div>
                             </td>
                         </tr>
                         {{end}}
@@ -415,16 +539,27 @@ func (a *App) Fetch(ctx context.Context) {
 		return
 	}
 
-	articles, err := a.fetcher.FetchAll(ctx, urls)
+	results, err := a.fetcher.FetchAll(ctx, urls)
 	if err != nil {
 		slog.Error("ошибка получения фидов", "error", err)
 		return
 	}
-	if err := a.db.SaveArticles(ctx, articles); err != nil {
+
+	var allArticles []storage.Article
+	for _, res := range results {
+		if res.Err != nil {
+			_ = a.db.UpdateFeedStatus(ctx, res.URL, res.Err)
+			continue
+		}
+		allArticles = append(allArticles, res.Articles...)
+		_ = a.db.UpdateFeedStatus(ctx, res.URL, nil)
+	}
+
+	if err := a.db.SaveArticles(ctx, allArticles); err != nil {
 		slog.Error("ошибка сохранения статей", "error", err)
 		return
 	}
-	slog.Info("статьи получены и сохранены", "count", len(articles))
+	slog.Info("статьи получены и сохранены", "count", len(allArticles))
 }
 
 func (a *App) loc() *time.Location {

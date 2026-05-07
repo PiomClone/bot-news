@@ -81,7 +81,7 @@ func TestSourceLabel(t *testing.T) {
 }
 
 func TestMakeFeedsKeyboard(t *testing.T) {
-	tg := &Telegram{}
+	tg := &Telegram{feedMap: make(map[string]string)}
 	feeds := []storage.Feed{
 		{URL: "http://f1", Title: "Feed 1", Enabled: true},
 		{URL: "http://f2", Title: "", Enabled: false},

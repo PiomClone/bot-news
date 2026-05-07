@@ -24,10 +24,12 @@ type Article struct {
 }
 
 type Feed struct {
-	URL     string
-	Title   string
-	Enabled bool
-	AddedAt time.Time
+	URL           string
+	Title         string
+	Enabled       bool
+	AddedAt       time.Time
+	LastFetchedAt time.Time
+	LastError     string
 }
 
 type DB struct {
@@ -87,18 +89,22 @@ func (s *DB) migrate() error {
 		);
 
 		CREATE TABLE IF NOT EXISTS feeds (
-			url        TEXT PRIMARY KEY,
-			title      TEXT DEFAULT '',
-			enabled    INTEGER DEFAULT 1,
-			added_at   INTEGER NOT NULL
+			url             TEXT PRIMARY KEY,
+			title           TEXT DEFAULT '',
+			enabled         INTEGER DEFAULT 1,
+			added_at        INTEGER NOT NULL,
+			last_fetched_at INTEGER,
+			last_error      TEXT
 		);
 	`)
 	if err != nil {
 		return err
 	}
 
-	// Миграция для существующей базы: добавляем колонку, если её нет
+	// Миграция для существующей базы: добавляем колонки, если их нет
 	_, _ = s.db.Exec("ALTER TABLE articles ADD COLUMN feed_title TEXT DEFAULT ''")
+	_, _ = s.db.Exec("ALTER TABLE feeds ADD COLUMN last_fetched_at INTEGER")
+	_, _ = s.db.Exec("ALTER TABLE feeds ADD COLUMN last_error TEXT")
 
 	return nil
 }
@@ -143,7 +149,9 @@ func (s *DB) GetActiveFeedURLs(ctx context.Context) ([]string, error) {
 }
 
 func (s *DB) GetAllFeeds(ctx context.Context) ([]Feed, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT url, title, enabled, added_at FROM feeds ORDER BY added_at ASC`)
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT url, title, enabled, added_at, last_fetched_at, last_error 
+		FROM feeds ORDER BY added_at ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -154,11 +162,19 @@ func (s *DB) GetAllFeeds(ctx context.Context) ([]Feed, error) {
 		var f Feed
 		var enabled int
 		var addedAt int64
-		if err := rows.Scan(&f.URL, &f.Title, &enabled, &addedAt); err != nil {
+		var lastFetched *int64
+		var lastErr sql.NullString
+
+		err := rows.Scan(&f.URL, &f.Title, &enabled, &addedAt, &lastFetched, &lastErr)
+		if err != nil {
 			return nil, err
 		}
 		f.Enabled = enabled != 0
 		f.AddedAt = time.Unix(addedAt, 0)
+		if lastFetched != nil {
+			f.LastFetchedAt = time.Unix(*lastFetched, 0)
+		}
+		f.LastError = lastErr.String
 		feeds = append(feeds, f)
 	}
 	return feeds, nil
@@ -167,6 +183,36 @@ func (s *DB) GetAllFeeds(ctx context.Context) ([]Feed, error) {
 func (s *DB) ToggleFeed(ctx context.Context, url string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE feeds SET enabled = 1 - enabled WHERE url = ?`, url)
 	return err
+}
+
+func (s *DB) AddFeed(ctx context.Context, url string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO feeds (url, added_at) VALUES (?, ?)
+		ON CONFLICT(url) DO UPDATE SET enabled = 1
+	`, url, time.Now().Unix())
+	return err
+}
+
+func (s *DB) DeleteFeed(ctx context.Context, url string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM feeds WHERE url = ?`, url)
+	return err
+}
+
+func (s *DB) UpdateFeedTitle(ctx context.Context, url, title string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE feeds SET title = ? WHERE url = ?`, title, url)
+	return err
+}
+
+func (s *DB) UpdateFeedStatus(ctx context.Context, url string, err error) error {
+	now := time.Now().Unix()
+	var errMsg string
+	if err != nil {
+		errMsg = err.Error()
+	}
+	_, dbErr := s.db.ExecContext(ctx, `
+		UPDATE feeds SET last_fetched_at = ?, last_error = ? WHERE url = ?
+	`, now, errMsg, url)
+	return dbErr
 }
 
 func (s *DB) SaveDigest(ctx context.Context, content string) error {
@@ -221,6 +267,13 @@ func (s *DB) SaveArticles(ctx context.Context, articles []Article) error {
 		)
 		if err != nil {
 			return err
+		}
+
+		// Обновляем заголовок в таблице feeds, если он там пустой
+		if a.FeedTitle != "" {
+			_, _ = tx.ExecContext(ctx, `
+				UPDATE feeds SET title = ? WHERE url = ? AND (title IS NULL OR title = '')
+			`, a.FeedTitle, a.FeedURL)
 		}
 	}
 	return tx.Commit()

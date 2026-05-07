@@ -47,10 +47,18 @@ func TestFetchAll(t *testing.T) {
 	srv := newTestServer(t, rss)
 
 	f := feed.NewFetcher(5 * time.Second)
-	articles, err := f.FetchAll(context.Background(), []string{srv.URL})
+	results, err := f.FetchAll(context.Background(), []string{srv.URL})
 	if err != nil {
 		t.Fatalf("FetchAll: %v", err)
 	}
+	if len(results) != 1 {
+		t.Fatalf("ожидали 1 результат, получили %d", len(results))
+	}
+	res := results[0]
+	if res.Err != nil {
+		t.Fatalf("ошибка фида: %v", res.Err)
+	}
+	articles := res.Articles
 	if len(articles) != 2 {
 		t.Fatalf("ожидали 2 статьи, получили %d", len(articles))
 	}
@@ -67,23 +75,29 @@ func TestFetchAll(t *testing.T) {
 
 func TestFetchAllBadURL(t *testing.T) {
 	f := feed.NewFetcher(1 * time.Second)
-	articles, err := f.FetchAll(context.Background(), []string{"http://127.0.0.1:1"})
+	results, err := f.FetchAll(context.Background(), []string{"http://127.0.0.1:1"})
 	if err != nil {
-		t.Fatalf("FetchAll должен возвращать nil при ошибке фида: %v", err)
+		t.Fatalf("FetchAll (error wrapper): %v", err)
 	}
-	if len(articles) != 0 {
-		t.Errorf("ожидали 0 статей при недоступном URL, получили %d", len(articles))
+	if len(results) != 1 {
+		t.Fatalf("ожидали 1 результат, получили %d", len(results))
+	}
+	if results[0].Err == nil {
+		t.Error("ожидали ошибку для недоступного URL")
+	}
+	if len(results[0].Articles) != 0 {
+		t.Errorf("ожидали 0 статей, получили %d", len(results[0].Articles))
 	}
 }
 
 func TestFetchAllEmpty(t *testing.T) {
 	f := feed.NewFetcher(5 * time.Second)
-	articles, err := f.FetchAll(context.Background(), nil)
+	results, err := f.FetchAll(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("FetchAll(nil): %v", err)
 	}
-	if len(articles) != 0 {
-		t.Errorf("ожидали 0 статей, получили %d", len(articles))
+	if len(results) != 0 {
+		t.Errorf("ожидали 0 результатов, получили %d", len(results))
 	}
 }
 
@@ -92,11 +106,21 @@ func TestFetchAllMultipleFeeds(t *testing.T) {
 	srv2 := newTestServer(t, fmt.Sprintf(rssTemplate, "Feed2 статья"))
 
 	f := feed.NewFetcher(5 * time.Second)
-	articles, err := f.FetchAll(context.Background(), []string{srv1.URL, srv2.URL})
+	results, err := f.FetchAll(context.Background(), []string{srv1.URL, srv2.URL})
 	if err != nil {
 		t.Fatalf("FetchAll: %v", err)
 	}
-	if len(articles) != 4 {
-		t.Fatalf("ожидали 4 статьи (2 фида × 2), получили %d", len(articles))
+	if len(results) != 2 {
+		t.Fatalf("ожидали 2 результата, получили %d", len(results))
+	}
+	totalArticles := 0
+	for _, res := range results {
+		if res.Err != nil {
+			t.Errorf("ошибка фида %s: %v", res.URL, res.Err)
+		}
+		totalArticles += len(res.Articles)
+	}
+	if totalArticles != 4 {
+		t.Fatalf("ожидали 4 статьи всего, получили %d", totalArticles)
 	}
 }

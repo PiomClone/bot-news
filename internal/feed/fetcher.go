@@ -24,14 +24,16 @@ func NewFetcher(timeout time.Duration) *Fetcher {
 	}
 }
 
-func (f *Fetcher) FetchAll(ctx context.Context, urls []string) ([]storage.Article, error) {
-	type result struct {
-		articles []storage.Article
-		url      string
-	}
+// FetchResult — результат сбора одного фида.
+type FetchResult struct {
+	URL      string
+	Articles []storage.Article
+	Err      error
+}
 
+func (f *Fetcher) FetchAll(ctx context.Context, urls []string) ([]FetchResult, error) {
 	sem := make(chan struct{}, maxConcurrent)
-	results := make(chan result, len(urls))
+	results := make(chan FetchResult, len(urls))
 	var wg sync.WaitGroup
 
 	for _, url := range urls {
@@ -49,9 +51,10 @@ func (f *Fetcher) FetchAll(ctx context.Context, urls []string) ([]storage.Articl
 			})
 			if err != nil {
 				slog.Warn("ошибка получения фида", "url", u, "error", err)
+				results <- FetchResult{URL: u, Err: err}
 				return
 			}
-			results <- result{articles: articles, url: u}
+			results <- FetchResult{URL: u, Articles: articles}
 		}(url)
 	}
 
@@ -60,9 +63,9 @@ func (f *Fetcher) FetchAll(ctx context.Context, urls []string) ([]storage.Articl
 		close(results)
 	}()
 
-	var all []storage.Article
+	var all []FetchResult
 	for r := range results {
-		all = append(all, r.articles...)
+		all = append(all, r)
 	}
 	return all, nil
 }
