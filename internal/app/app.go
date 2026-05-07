@@ -242,7 +242,7 @@ func (a *App) runHealthServer(ctx context.Context) {
 		caCertPool.AppendCertsFromPEM(caCert)
 
 		srv.TLSConfig = &tls.Config{
-			ClientAuth: tls.RequireAndVerifyClientCert,
+			ClientAuth: tls.VerifyClientCertIfGiven,
 			ClientCAs:  caCertPool,
 			MinVersion: tls.VersionTLS12,
 		}
