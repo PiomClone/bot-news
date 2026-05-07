@@ -138,17 +138,13 @@ func (t *Telegram) setupCommands(
 ) {
 	btnFetch := telebot.Btn{Unique: "cb_fetch", Text: "🔄 Собрать статьи"}
 	btnDigest := telebot.Btn{Unique: "cb_digest", Text: "📨 Запустить дайджест"}
-	keyboardMain := &telebot.ReplyMarkup{}
-	keyboardMain.Inline(keyboardMain.Row(btnFetch, btnDigest))
-
-	opts := &telebot.SendOptions{ParseMode: telebot.ModeHTML, DisableWebPagePreview: true}
 
 	t.bot.Handle("/fetch", func(c telebot.Context) error {
 		if !allowed(c) {
 			return nil
 		}
 		go onFetch()
-		return c.Reply("⏳ Сбор статей запущен...", opts)
+		return c.Reply("⏳ Сбор статей запущен...", &telebot.SendOptions{ParseMode: telebot.ModeHTML})
 	})
 	t.bot.Handle("/digest", func(c telebot.Context) error {
 		if !allowed(c) {
@@ -156,22 +152,35 @@ func (t *Telegram) setupCommands(
 		}
 		n := onDigestCount()
 		if n == 0 {
-			return c.Reply("📭 Новых статей за сегодня нет", opts)
+			return c.Reply("📭 Новых статей за сегодня нет", &telebot.SendOptions{ParseMode: telebot.ModeHTML})
 		}
 		go onDigest()
-		return c.Reply(fmt.Sprintf("⏳ Формирую дайджест из %d статей за сегодня...", n), opts)
+		return c.Reply(fmt.Sprintf("⏳ Формирую дайджест из %d статей за сегодня...", n),
+			&telebot.SendOptions{ParseMode: telebot.ModeHTML})
 	})
 	t.bot.Handle("/stats", func(c telebot.Context) error {
 		if !allowed(c) {
 			return nil
 		}
-		return c.Reply(onStats(), keyboardMain, opts)
+		kb := &telebot.ReplyMarkup{}
+		kb.Inline(kb.Row(btnFetch, btnDigest))
+		return c.Reply(onStats(), &telebot.SendOptions{
+			ParseMode:             telebot.ModeHTML,
+			DisableWebPagePreview: true,
+			ReplyMarkup:           kb,
+		})
 	})
 	t.bot.Handle("/latest", func(c telebot.Context) error {
 		if !allowed(c) {
 			return nil
 		}
-		return c.Reply(onLatest(), keyboardMain, opts)
+		kb := &telebot.ReplyMarkup{}
+		kb.Inline(kb.Row(btnFetch, btnDigest))
+		return c.Reply(onLatest(), &telebot.SendOptions{
+			ParseMode:             telebot.ModeHTML,
+			DisableWebPagePreview: true,
+			ReplyMarkup:           kb,
+		})
 	})
 	t.bot.Handle("/feeds", func(c telebot.Context) error {
 		if !allowed(c) {
@@ -179,13 +188,17 @@ func (t *Telegram) setupCommands(
 		}
 		feeds, err := onFeeds()
 		if err != nil {
-			return c.Reply("❌ Ошибка получения списка фидов", opts)
+			return c.Reply("❌ Ошибка получения списка фидов")
 		}
 		if len(feeds) == 0 {
-			return c.Reply("📋 <b>Управление фидами:</b>\n\nСписок источников пуст. Добавьте их через веб-панель.", opts)
+			return c.Reply("📋 <b>Управление фидами:</b>\n\nСписок источников пуст. Добавьте их через веб-панель.",
+				&telebot.SendOptions{ParseMode: telebot.ModeHTML})
 		}
 		return c.Reply("📋 <b>Управление фидами:</b>\nНажмите на кнопку, чтобы включить/выключить фид.",
-			t.makeFeedsKeyboard(feeds), opts)
+			&telebot.SendOptions{
+				ParseMode:   telebot.ModeHTML,
+				ReplyMarkup: t.makeFeedsKeyboard(feeds),
+			})
 	})
 }
 
