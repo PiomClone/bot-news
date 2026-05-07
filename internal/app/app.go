@@ -191,9 +191,12 @@ func (a *App) Run() {
 
 func (a *App) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Если включен TLS (mTLS), то проверка токена не требуется,
-		// так как авторизация прошла на уровне протокола.
+		// Если включен TLS (mTLS), проверяем наличие клиентского сертификата.
 		if a.cfg.TLSEnabled {
+			if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+				http.Error(w, "missing client certificate", http.StatusForbidden)
+				return
+			}
 			next(w, r)
 			return
 		}

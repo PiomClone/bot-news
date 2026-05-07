@@ -42,8 +42,9 @@ ssh "$HOST" "set -e;
     sleep 1;
     systemctl is-active '$SERVICE_NAME';
     # Пробуем HTTP, если не вышло — HTTPS (для mTLS/TLS режима)
-    curl -fsS --max-time 3 http://127.0.0.1:8080/health || \
+    curl -fsS --max-time 3 http://127.0.0.1:8080/health 2>/dev/null || \
     curl -fsSk --max-time 3 https://127.0.0.1:8080/health;
+    echo "" # Перенос строки после 'ok'
     rm -f '/tmp/$BINARY_NAME.new'"
 
 echo "Готово"
