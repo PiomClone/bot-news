@@ -1,8 +1,15 @@
 package notifier
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	telebot "gopkg.in/telebot.v3"
 
 	"bot-news/internal/storage"
 )
@@ -106,5 +113,84 @@ func TestMakeFeedsKeyboard(t *testing.T) {
 	btn2 := kb.InlineKeyboard[1][0]
 	if !strings.Contains(btn2.Text, "❌") || !strings.Contains(btn2.Text, "@f2") {
 		t.Errorf("неверный текст кнопки 2: %q", btn2.Text)
+	}
+}
+
+func TestTelegram_Send(t *testing.T) {
+	mux := http.NewServeMux()
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	// Мокаем эндпоинт sendMessage
+	mux.HandleFunc("/bot123/sendMessage", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok": true,
+			"result": map[string]any{
+				"message_id": 1,
+			},
+		})
+	})
+
+	bot, err := telebot.NewBot(telebot.Settings{
+		Token:  "123",
+		URL:    server.URL,
+		Offline: true,
+	})
+	if err != nil {
+		t.Fatalf("не удалось создать бота: %v", err)
+	}
+
+	tg := &Telegram{
+		bot:  bot,
+		chat: numericRecipient(12345),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	t.Run("Send success", func(t *testing.T) {
+		if err := tg.Send(ctx, "test message"); err != nil {
+			t.Errorf("Send: %v", err)
+		}
+	})
+
+	t.Run("SendToAdmin", func(t *testing.T) {
+		if err := tg.SendToAdmin(ctx, 54321, "admin message"); err != nil {
+			t.Errorf("SendToAdmin: %v", err)
+		}
+	})
+
+	t.Run("SendToAdmin skip", func(t *testing.T) {
+		if err := tg.SendToAdmin(ctx, 0, "admin message"); err != nil {
+			t.Errorf("SendToAdmin(0): %v", err)
+		}
+	})
+}
+
+func TestTelegram_ListenCommands(t *testing.T) {
+	// Мы не можем легко протестировать polling, но можем протестировать инициализацию команд.
+	bot, _ := telebot.NewBot(telebot.Settings{
+		Token:   "123",
+		Offline: true,
+	})
+	tg := &Telegram{bot: bot}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Сразу отменяем, чтобы ListenCommands завершился после старта
+
+	tg.ListenCommands(ctx, 123,
+		func() {}, func() {},
+		func() string { return "" }, func() string { return "" },
+		func() int { return 0 },
+		func() ([]storage.Feed, error) { return nil, nil },
+		func(string) error { return nil },
+	)
+}
+
+func TestNewTelegram_Error(t *testing.T) {
+	_, err := NewTelegram("", "bad")
+	if err == nil {
+		t.Error("ожидали ошибку при пустом токене")
 	}
 }

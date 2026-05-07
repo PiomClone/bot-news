@@ -2,6 +2,7 @@ package storage_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -415,5 +416,66 @@ func TestFeeds(t *testing.T) {
 	urls, _ = db.GetActiveFeedURLs(ctx)
 	if len(urls) != 2 {
 		t.Errorf("после включения ожидали 2 активных URL, получили %d", len(urls))
+	}
+
+	// 6. AddFeed
+	if err := db.AddFeed(ctx, "http://rss3"); err != nil {
+		t.Fatalf("AddFeed: %v", err)
+	}
+	feeds, _ = db.GetAllFeeds(ctx)
+	if len(feeds) != 3 {
+		t.Errorf("ожидали 3 фида после AddFeed, получили %d", len(feeds))
+	}
+
+	// 7. UpdateFeedTitle
+	if err := db.UpdateFeedTitle(ctx, "http://rss3", "New Title"); err != nil {
+		t.Fatalf("UpdateFeedTitle: %v", err)
+	}
+	feeds, _ = db.GetAllFeeds(ctx)
+	found := false
+	for _, f := range feeds {
+		if f.URL == "http://rss3" && f.Title == "New Title" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("UpdateFeedTitle не сработал")
+	}
+
+	// 8. UpdateFeedStatus
+	testErr := fmt.Errorf("some error")
+	if err := db.UpdateFeedStatus(ctx, "http://rss3", testErr); err != nil {
+		t.Fatalf("UpdateFeedStatus: %v", err)
+	}
+	feeds, _ = db.GetAllFeeds(ctx)
+	for _, f := range feeds {
+		if f.URL == "http://rss3" {
+			if f.LastError != "some error" {
+				t.Errorf("ожидали LastError 'some error', получили %q", f.LastError)
+			}
+			if f.LastFetchedAt.IsZero() {
+				t.Error("LastFetchedAt должен быть установлен")
+			}
+		}
+	}
+
+	// 9. DeleteFeed
+	if err := db.DeleteFeed(ctx, "http://rss1"); err != nil {
+		t.Fatalf("DeleteFeed: %v", err)
+	}
+	feeds, _ = db.GetAllFeeds(ctx)
+	if len(feeds) != 2 {
+		t.Errorf("ожидали 2 фида после DeleteFeed, получили %d", len(feeds))
+	}
+}
+
+func TestGetLatestPerFeed_EdgeCases(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+
+	latest, err := db.GetLatestPerFeed(ctx, 0)
+	if err != nil || len(latest) != 0 {
+		t.Errorf("GetLatestPerFeed(0) должен возвращать nil, nil. Получили %v, %v", latest, err)
 	}
 }

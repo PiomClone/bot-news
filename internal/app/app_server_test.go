@@ -57,14 +57,23 @@ func (m *mockSummarizer) GetLimits() string { return "" }
 
 type mockFetcher struct {
 	articles []storage.Article
-	err      error
+	err      error // Ошибка всего FetchAll
+	feedErr  error // Ошибка для каждого фида в FetchResult
 }
 
-func (m *mockFetcher) FetchAll(_ context.Context, _ []string) ([]feed.FetchResult, error) {
+func (m *mockFetcher) FetchAll(_ context.Context, urls []string) ([]feed.FetchResult, error) {
 	if m.err != nil {
 		return nil, m.err
 	}
-	return []feed.FetchResult{{Articles: m.articles}}, nil
+	var res []feed.FetchResult
+	for _, u := range urls {
+		res = append(res, feed.FetchResult{
+			URL:      u,
+			Articles: m.articles,
+			Err:      m.feedErr,
+		})
+	}
+	return res, nil
 }
 
 func TestAppServer_Auth(t *testing.T) {

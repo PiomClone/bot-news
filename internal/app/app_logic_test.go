@@ -87,4 +87,39 @@ func TestApp_Orchestration(t *testing.T) {
 			t.Errorf("не сработал fallback для LatestText: %q", text)
 		}
 	})
+
+	t.Run("Digest No Articles (Heartbeat)", func(t *testing.T) {
+		// У нас нет неотправленных статей сейчас
+		app.Digest(ctx)
+		// mockNotifier.Send должен быть вызван для heartbeat
+		if notif.sentCount != 2 { // Был 1 в предыдущем тесте Digest
+			t.Errorf("ожидали 2 отправки всего (включая heartbeat), получили %d", notif.sentCount)
+		}
+	})
+
+	t.Run("Fetch No Feeds", func(t *testing.T) {
+		// Удалим все фиды
+		_ = db.DeleteFeed(ctx, "http://f1")
+		app.Fetch(ctx)
+		// Ничего не должно упасть, просто лог в stdout
+	})
+
+	t.Run("Fetch With Errors", func(t *testing.T) {
+		_ = db.AddFeed(ctx, "http://error-feed")
+		fetcher.err = nil
+		fetcher.feedErr = context.DeadlineExceeded
+		app.Fetch(ctx)
+		// Проверим, что статус фида обновился в базе
+		feeds, _ := db.GetAllFeeds(ctx)
+		found := false
+		for _, f := range feeds {
+			if f.URL == "http://error-feed" && f.LastError != "" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("ожидали LastError у фида после ошибки Fetch")
+		}
+	})
 }
