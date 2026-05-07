@@ -340,20 +340,23 @@ func (a *App) handleDashboard(ctx context.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		stats, _ := a.db.GetStats(ctx)
 		feeds, _ := a.db.GetAllFeeds(ctx)
+		digestCount, _ := a.db.GetUnsentCount(ctx, a.digestSince())
 		token := r.URL.Query().Get("token")
 
 		data := struct {
-			Stats      storage.Stats
-			Feeds      []storage.Feed
-			Version    string
-			Token      string
-			TLSEnabled bool
+			Stats       storage.Stats
+			DigestCount int
+			Feeds       []storage.Feed
+			Version     string
+			Token       string
+			TLSEnabled  bool
 		}{
-			Stats:      stats,
-			Feeds:      feeds,
-			Version:    "1.1.0",
-			Token:      token,
-			TLSEnabled: a.cfg.TLSEnabled,
+			Stats:       stats,
+			DigestCount: digestCount,
+			Feeds:       feeds,
+			Version:     "1.1.0",
+			Token:       token,
+			TLSEnabled:  a.cfg.TLSEnabled,
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -425,18 +428,22 @@ var dashboardTmpl = template.Must(template.New("dashboard").Parse(`
             </form>
         </div>
 
-        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
             <div class="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
-                <div class="text-slate-400 text-xs uppercase tracking-wider mb-1">Всего статей</div>
+                <div class="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Всего собрано</div>
                 <div class="text-2xl font-bold">{{.Stats.TotalArticles}}</div>
             </div>
             <div class="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
-                <div class="text-slate-400 text-xs uppercase tracking-wider mb-1">Отправлено</div>
+                <div class="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Отправлено</div>
                 <div class="text-2xl font-bold text-emerald-400">{{.Stats.SentArticles}}</div>
             </div>
             <div class="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
-                <div class="text-slate-400 text-xs uppercase tracking-wider mb-1">Последний сбор</div>
-                <div class="text-sm font-medium pt-1">
+                <div class="text-slate-400 text-[10px] uppercase tracking-wider mb-1">В дайджесте</div>
+                <div class="text-2xl font-bold text-amber-400">{{.DigestCount}}</div>
+            </div>
+            <div class="bg-slate-800/50 p-4 rounded-xl border border-slate-700">
+                <div class="text-slate-400 text-[10px] uppercase tracking-wider mb-1">Последний сбор</div>
+                <div class="text-sm font-bold pt-1.5">
                     {{if .Stats.LastFetchedAt.IsZero}}
                         <span class="text-slate-500 italic">никогда</span>
                     {{else}}
