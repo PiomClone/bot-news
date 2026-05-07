@@ -15,6 +15,7 @@ import (
 type Summarizer interface {
 	Summarize(ctx context.Context, articles []storage.Article) (string, error)
 	GetLimits() string
+	SetLimits(string)
 }
 
 func sourceLabel(feedURL string) string {
@@ -96,3 +97,5 @@ func (s *SimpleSummarizer) Summarize(_ context.Context, articles []storage.Artic
 func (s *SimpleSummarizer) GetLimits() string {
 	return ""
 }
+
+func (s *SimpleSummarizer) SetLimits(_ string) {}

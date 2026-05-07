@@ -96,6 +96,11 @@ func (s *DB) migrate() error {
 			last_fetched_at INTEGER,
 			last_error      TEXT
 		);
+
+		CREATE TABLE IF NOT EXISTS kv (
+			key   TEXT PRIMARY KEY,
+			value TEXT
+		);
 	`)
 	if err != nil {
 		return err
@@ -413,4 +418,21 @@ func (s *DB) MarkSent(ctx context.Context, ids []int64) error {
 	query := "UPDATE articles SET sent = 1 WHERE id IN (" + strings.Join(placeholders, ",") + ")"
 	_, err := s.db.ExecContext(ctx, query, args...)
 	return err
+}
+
+func (s *DB) SetState(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO kv (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value
+	`, key, value)
+	return err
+}
+
+func (s *DB) GetState(ctx context.Context, key string) (string, error) {
+	var val string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, key).Scan(&val)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return val, err
 }

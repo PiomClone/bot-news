@@ -76,13 +76,20 @@ func NewApp(cfg config.Config) (*App, error) {
 		return nil, fmt.Errorf("telegram: %w", err)
 	}
 
-	return &App{
+	a := &App{
 		cfg:     cfg,
 		db:      db,
 		fetcher: feed.NewFetcher(30 * time.Second),
 		sum:     sum,
 		notif:   notif,
-	}, nil
+	}
+
+	// Загружаем сохраненные лимиты AI
+	if limits, err := db.GetState(context.Background(), "ai_limits"); err == nil && limits != "" {
+		a.sum.SetLimits(limits)
+	}
+
+	return a, nil
 }
 
 // NewAppWithDeps используется в тестах для инъекции зависимостей.
@@ -679,6 +686,9 @@ func (a *App) LatestText(ctx context.Context) string {
 		return sb.String()
 	}
 
+	// Сохраняем новые лимиты
+	_ = a.db.SetState(ctx, "ai_limits", a.sum.GetLimits())
+
 	return "🆕 <b>Свежий обзор последних новостей (по 3 с каждого канала):</b>\n\n" + text
 }
 
@@ -728,6 +738,9 @@ func (a *App) Digest(ctx context.Context) {
 	if err := a.db.SaveDigest(ctx, text); err != nil {
 		slog.Error("ошибка сохранения дайджеста в базу", "error", err)
 	}
+
+	// Сохраняем лимиты после успешной генерации
+	_ = a.db.SetState(ctx, "ai_limits", a.sum.GetLimits())
 
 	if err := a.notif.Send(ctx, text); err != nil {
 		slog.Error("ошибка отправки в Telegram", "error", err)

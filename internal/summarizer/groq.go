@@ -37,6 +37,10 @@ func (g *GroqSummarizer) GetLimits() string {
 	return g.limits
 }
 
+func (g *GroqSummarizer) SetLimits(limits string) {
+	g.limits = limits
+}
+
 func (g *GroqSummarizer) Summarize(ctx context.Context, articles []storage.Article) (string, error) {
 	if len(articles) == 0 {
 		return "", nil

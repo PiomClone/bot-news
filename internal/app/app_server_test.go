@@ -55,6 +55,8 @@ func (m *mockSummarizer) Summarize(_ context.Context, _ []storage.Article) (stri
 
 func (m *mockSummarizer) GetLimits() string { return "" }
 
+func (m *mockSummarizer) SetLimits(_ string) {}
+
 type mockFetcher struct {
 	articles []storage.Article
 	err      error // Ошибка всего FetchAll
