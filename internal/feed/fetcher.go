@@ -3,6 +3,7 @@ package feed
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,19 +85,34 @@ func (f *Fetcher) fetchOne(ctx context.Context, url string) ([]storage.Article, 
 	articles := make([]storage.Article, 0, len(feed.Items))
 	for _, item := range feed.Items {
 		guid := item.GUID
+		link := item.Link
+
+		// Если это RSSHub для Telegram, GUID часто совпадает с прямой ссылкой на пост.
+		// В общем случае, если Link пустой, а GUID выглядит как URL — используем его.
+		if link == "" && (guid != "" && (guid[:4] == "http")) {
+			link = guid
+		}
+
 		if guid == "" {
-			guid = item.Link
+			guid = link
 		}
 		if guid == "" {
 			continue
 		}
+
+		var categories string
+		if len(item.Categories) > 0 {
+			categories = strings.Join(item.Categories, ", ")
+		}
+
 		a := storage.Article{
 			FeedURL:     url,
 			FeedTitle:   feed.Title,
 			GUID:        guid,
 			Title:       item.Title,
-			Link:        item.Link,
+			Link:        link,
 			Description: item.Description,
+			Categories:  categories,
 			FetchedAt:   now,
 		}
 		if item.PublishedParsed != nil {

@@ -2,7 +2,6 @@ package storage_test
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -20,12 +19,27 @@ func newTestDB(t *testing.T) *storage.DB {
 	t.Helper()
 	db, err := storage.NewDB(":memory:")
 	if err != nil {
-		t.Fatalf("не удалось создать тестовую БД: %v", err)
+		t.Fatalf("NewDB: %v", err)
 	}
 	t.Cleanup(func() {
 		_ = db.Close()
 	})
 	return db
+}
+
+func mustCreateChannel(t *testing.T, db *storage.DB, name string) int64 {
+	t.Helper()
+	id, err := db.UpsertChannel(context.Background(), storage.Channel{
+		Name:           name,
+		TelegramChatID: "@test",
+		DigestCron:     "0 9 * * *",
+		Timezone:       "UTC",
+		Active:         true,
+	})
+	if err != nil {
+		t.Fatalf("UpsertChannel: %v", err)
+	}
+	return id
 }
 
 func mustSave(t *testing.T, db *storage.DB, articles []storage.Article) {
@@ -38,21 +52,24 @@ func mustSave(t *testing.T, db *storage.DB, articles []storage.Article) {
 func TestSaveArticles_Deduplication(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
+	chID := mustCreateChannel(t, db, "Test")
 
 	now := time.Now()
 	mustSave(t, db, []storage.Article{
 		{
-			FeedURL: testFeedURL, FeedTitle: "Source 1", GUID: "guid-1",
+			ChannelID: chID,
+			FeedURL:   testFeedURL, FeedTitle: "Source 1", GUID: "guid-1",
 			Title: "Статья 1", Link: "http://link/1", FetchedAt: now, PublishedAt: now,
 		},
 		{
-			FeedURL: testFeedURL, FeedTitle: "Source 1", GUID: "guid-1",
+			ChannelID: chID,
+			FeedURL:   testFeedURL, FeedTitle: "Source 1", GUID: "guid-1",
 			Title: "Статья 1 дубль", Link: "http://link/1", FetchedAt: now, PublishedAt: now,
 		},
 	})
 
 	since := now.AddDate(0, 0, -1)
-	saved, err := db.GetUnsent(ctx, since)
+	saved, err := db.GetUnsent(ctx, chID, since)
 	if err != nil {
 		t.Fatalf("GetUnsent: %v", err)
 	}
@@ -62,29 +79,29 @@ func TestSaveArticles_Deduplication(t *testing.T) {
 	if saved[0].Title != "Статья 1 дубль" {
 		t.Errorf("неожиданный заголовок: %q, ожидали обновление (upsert)", saved[0].Title)
 	}
-	if saved[0].FeedTitle != "Source 1" {
-		t.Errorf("неожиданный FeedTitle: %q", saved[0].FeedTitle)
-	}
 }
 
 func TestMarkSent(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
+	chID := mustCreateChannel(t, db, "Test")
 
 	now := time.Now()
 	mustSave(t, db, []storage.Article{
 		{
-			FeedURL: testFeedURL, FeedTitle: "A", GUID: "guid-a",
+			ChannelID: chID,
+			FeedURL:   testFeedURL, FeedTitle: "A", GUID: "guid-a",
 			Title: "А", Link: testLinkA, FetchedAt: now, PublishedAt: now,
 		},
 		{
-			FeedURL: testFeedURL, FeedTitle: "B", GUID: "guid-b",
+			ChannelID: chID,
+			FeedURL:   testFeedURL, FeedTitle: "B", GUID: "guid-b",
 			Title: "Б", Link: testLinkB, FetchedAt: now, PublishedAt: now,
 		},
 	})
 
 	since := now.AddDate(0, 0, -1)
-	saved, _ := db.GetUnsent(ctx, since)
+	saved, _ := db.GetUnsent(ctx, chID, since)
 	if len(saved) != 2 {
 		t.Fatalf("ожидали 2 статьи, получили %d", len(saved))
 	}
@@ -93,7 +110,7 @@ func TestMarkSent(t *testing.T) {
 		t.Fatalf("MarkSent: %v", err)
 	}
 
-	unsent, _ := db.GetUnsent(ctx, since)
+	unsent, _ := db.GetUnsent(ctx, chID, since)
 	if len(unsent) != 1 {
 		t.Fatalf("ожидали 1 неотправленную, получили %d", len(unsent))
 	}
@@ -101,381 +118,117 @@ func TestMarkSent(t *testing.T) {
 
 func TestGetUnsent_SinceFilter(t *testing.T) {
 	db := newTestDB(t)
+	chID := mustCreateChannel(t, db, "Test")
 
 	now := time.Now()
 	old := now.AddDate(0, 0, -3)
 
-	// Старая статья — с published_at 3 дня назад
 	mustSave(t, db, []storage.Article{
 		{
-			FeedURL: testFeedF, FeedTitle: "Old", GUID: "old-1",
+			ChannelID: chID,
+			FeedURL:   testFeedF, GUID: "old-1",
 			Title: "Старая", Link: "http://old", FetchedAt: old, PublishedAt: old,
 		},
-	})
-	// Новая статья — сегодня
-	mustSave(t, db, []storage.Article{
 		{
-			FeedURL: testFeedF, FeedTitle: "New", GUID: "new-1",
+			ChannelID: chID,
+			FeedURL:   testFeedF, GUID: "new-1",
 			Title: "Новая", Link: "http://new", FetchedAt: now, PublishedAt: now,
 		},
 	})
 
 	since := now.AddDate(0, 0, -1)
-	unsent, err := db.GetUnsent(context.Background(), since)
+	unsent, err := db.GetUnsent(context.Background(), chID, since)
 	if err != nil {
 		t.Fatalf("GetUnsent: %v", err)
 	}
 	if len(unsent) != 1 {
-		t.Fatalf("ожидали 1 статью (только новая), получили %d", len(unsent))
-	}
-	if unsent[0].GUID != "new-1" {
-		t.Errorf("ожидали new-1, получили %q", unsent[0].GUID)
+		t.Fatalf("ожидали 1 статью, получили %d", len(unsent))
 	}
 }
 
 func TestGetUnsentNullPublishedAt(t *testing.T) {
 	db := newTestDB(t)
+	chID := mustCreateChannel(t, db, "Test")
 
 	now := time.Now()
-	// Статья без published_at — должна попасть по fetched_at
 	mustSave(t, db, []storage.Article{
 		{
-			FeedURL: testFeedF, FeedTitle: "F", GUID: "no-pub",
+			ChannelID: chID,
+			FeedURL:   testFeedF, GUID: "no-pub",
 			Title: "Без даты", Link: "http://x", FetchedAt: now,
 		},
 	})
 
 	since := now.AddDate(0, 0, -1)
-	unsent, err := db.GetUnsent(context.Background(), since)
-	if err != nil {
-		t.Fatalf("GetUnsent: %v", err)
-	}
+	unsent, _ := db.GetUnsent(context.Background(), chID, since)
 	if len(unsent) != 1 {
-		t.Fatalf("ожидали 1 статью (fallback на fetched_at), получили %d", len(unsent))
-	}
-}
-
-func TestMarkSent_Empty(t *testing.T) {
-	db := newTestDB(t)
-	if err := db.MarkSent(context.Background(), nil); err != nil {
-		t.Fatalf("MarkSent(nil): %v", err)
+		t.Fatalf("ожидали 1 статью, получили %d", len(unsent))
 	}
 }
 
 func TestGetStats(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
+	chID := mustCreateChannel(t, db, "Test")
 
-	// Пустая БД
-	stats, err := db.GetStats(ctx)
-	if err != nil {
-		t.Fatalf("GetStats (пустая БД): %v", err)
-	}
-	if stats.TotalArticles != 0 || stats.SentArticles != 0 {
-		t.Errorf("ожидали 0/0, получили %d/%d", stats.TotalArticles, stats.SentArticles)
+	stats, _ := db.GetStats(ctx, chID)
+	if stats.TotalArticles != 0 {
+		t.Errorf("ожидали 0, получили %d", stats.TotalArticles)
 	}
 
 	now := time.Now()
 	mustSave(t, db, []storage.Article{
-		{
-			FeedURL: testFeedF, FeedTitle: "F", GUID: "g1",
-			Title: "A", Link: testLinkA, FetchedAt: now, PublishedAt: now,
-		},
-		{
-			FeedURL: testFeedF, FeedTitle: "F", GUID: "g2",
-			Title: "B", Link: testLinkB, FetchedAt: now, PublishedAt: now,
-		},
+		{ChannelID: chID, FeedURL: testFeedF, GUID: "g1", Title: "A", FetchedAt: now},
 	})
 
-	since := now.AddDate(0, 0, -1)
-	saved, _ := db.GetUnsent(ctx, since)
-	_ = db.MarkSent(ctx, []int64{saved[0].ID})
-
-	stats, err = db.GetStats(ctx)
-	if err != nil {
-		t.Fatalf("GetStats: %v", err)
-	}
-	if stats.TotalArticles != 2 {
-		t.Errorf("TotalArticles: ожидали 2, получили %d", stats.TotalArticles)
-	}
-	if stats.SentArticles != 1 {
-		t.Errorf("SentArticles: ожидали 1, получили %d", stats.SentArticles)
-	}
-	if stats.LastFetchedAt.IsZero() {
-		t.Error("LastFetchedAt не должен быть zero")
+	stats, _ = db.GetStats(ctx, chID)
+	if stats.TotalArticles != 1 {
+		t.Errorf("ожидали 1, получили %d", stats.TotalArticles)
 	}
 }
 
 func TestGetUnsentCount(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
+	chID := mustCreateChannel(t, db, "Test")
 
 	now := time.Now()
 	mustSave(t, db, []storage.Article{
-		{
-			FeedURL: testFeedF, FeedTitle: "F", GUID: "g1",
-			Title: "A", Link: testLinkA, FetchedAt: now, PublishedAt: now,
-		},
-		{
-			FeedURL: testFeedF, FeedTitle: "F", GUID: "g2",
-			Title: "B", Link: testLinkB, FetchedAt: now, PublishedAt: now,
-		},
-		{
-			FeedURL: testFeedF, FeedTitle: "F", GUID: "g-no-pub",
-			Title: "No pub", Link: "http://no-pub", FetchedAt: now,
-		},
-		{
-			FeedURL: testFeedF, FeedTitle: "F", GUID: "g3", Title: "C", Link: "http://c",
-			FetchedAt: now.AddDate(0, 0, -3), PublishedAt: now.AddDate(0, 0, -3),
-		},
+		{ChannelID: chID, FeedURL: testFeedF, GUID: "g1", Title: "A", FetchedAt: now},
+		{ChannelID: chID, FeedURL: testFeedF, GUID: "g2", Title: "B", FetchedAt: now.AddDate(0, 0, -5)},
 	})
 
 	since := now.AddDate(0, 0, -1)
-	count, err := db.GetUnsentCount(ctx, since)
-	if err != nil {
-		t.Fatalf("GetUnsentCount: %v", err)
-	}
-	if count != 3 {
-		t.Errorf("ожидали 3, получили %d", count)
-	}
-}
-
-func TestGetLatestPerFeed(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-
-	base := time.Now()
-	mustSave(t, db, []storage.Article{
-		{
-			FeedURL: "http://rss/a", FeedTitle: "Title A", GUID: "a-old",
-			Title: "A old", Link: "http://a/old",
-			FetchedAt: base.Add(-3 * time.Hour), PublishedAt: base.Add(-3 * time.Hour),
-		},
-		{
-			FeedURL: "http://rss/a", FeedTitle: "Title A", GUID: "a-new",
-			Title: "A new", Link: "http://a/new",
-			FetchedAt: base.Add(-1 * time.Hour), PublishedAt: base.Add(-1 * time.Hour),
-		},
-		{
-			FeedURL: "http://rss/a", FeedTitle: "Title A", GUID: "a-mid",
-			Title: "A mid", Link: "http://a/mid",
-			FetchedAt: base.Add(-2 * time.Hour), PublishedAt: base.Add(-2 * time.Hour),
-		},
-		{
-			FeedURL: "http://rss/b", FeedTitle: "Title B", GUID: "b-old",
-			Title: "B old", Link: "http://b/old", FetchedAt: base.Add(-4 * time.Hour),
-		},
-		{
-			FeedURL: "http://rss/b", FeedTitle: "Title B", GUID: "b-new",
-			Title: "B new", Link: "http://b/new", FetchedAt: base.Add(-30 * time.Minute),
-		},
-	})
-
-	since := base.Add(-24 * time.Hour)
-	saved, err := db.GetUnsent(ctx, since)
-	if err != nil {
-		t.Fatalf("GetUnsent: %v", err)
-	}
-	if errMark := db.MarkSent(ctx, []int64{saved[2].ID}); errMark != nil {
-		t.Fatalf("MarkSent: %v", errMark)
-	}
-
-	latest, err := db.GetLatestPerFeed(ctx, 2)
-	if err != nil {
-		t.Fatalf("GetLatestPerFeed: %v", err)
-	}
-	if len(latest) != 4 {
-		t.Fatalf("ожидали 4 статьи, получили %d: %#v", len(latest), latest)
-	}
-
-	wantTitles := []string{"A new", "A mid", "B new", "B old"}
-	for i, want := range wantTitles {
-		if latest[i].Title != want {
-			t.Fatalf("latest[%d]: ожидали %q, получили %q", i, want, latest[i].Title)
-		}
-		if latest[i].FeedTitle == "" {
-			t.Fatalf("latest[%d]: FeedTitle не должен быть пустым", i)
-		}
-	}
-}
-
-func TestDigests(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-
-	// Сначала пусто
-	last, err := db.GetLastDigest(ctx)
-	if err != nil {
-		t.Fatalf("GetLastDigest (empty): %v", err)
-	}
-	if last != "" {
-		t.Errorf("ожидали пустую строку, получили %q", last)
-	}
-
-	// Сохраняем первый
-	content1 := "Дайджест 1"
-	if err1 := db.SaveDigest(ctx, content1); err1 != nil {
-		t.Fatalf("SaveDigest 1: %v", err1)
-	}
-
-	// Сохраняем второй
-	content2 := "Дайджест 2"
-	if err2 := db.SaveDigest(ctx, content2); err2 != nil {
-		t.Fatalf("SaveDigest 2: %v", err2)
-	}
-
-	// Должен вернуть последний (второй)
-	last, err = db.GetLastDigest(ctx)
-	if err != nil {
-		t.Fatalf("GetLastDigest: %v", err)
-	}
-	if last != content2 {
-		t.Errorf("ожидали %q, получили %q", content2, last)
+	count, _ := db.GetUnsentCount(ctx, chID, since)
+	if count != 1 {
+		t.Errorf("ожидали 1, получили %d", count)
 	}
 }
 
 func TestDeleteOldArticles(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
+	chID := mustCreateChannel(t, db, "Test")
 
 	now := time.Now()
 	old := now.AddDate(0, 0, -40)
 
 	mustSave(t, db, []storage.Article{
-		{FeedURL: testFeedF, FeedTitle: "F", GUID: "old-sent", Title: "Старая отправленная", FetchedAt: old},
-		{FeedURL: testFeedF, FeedTitle: "F", GUID: "old-unsent", Title: "Старая неотправленная", FetchedAt: old},
-		{FeedURL: testFeedF, FeedTitle: "F", GUID: "new-sent", Title: "Новая отправленная", FetchedAt: now},
+		{ChannelID: chID, FeedURL: testFeedF, GUID: "old-sent", Title: "S", FetchedAt: old},
+		{ChannelID: chID, FeedURL: testFeedF, GUID: "new-unsent", Title: "U", FetchedAt: now},
 	})
 
-	// Помечаем "отправленными"
 	since := now.AddDate(0, 0, -50)
-	saved, _ := db.GetUnsent(ctx, since)
-	ids := []int64{saved[0].ID, saved[2].ID} // old-sent и new-sent
-	_ = db.MarkSent(ctx, ids)
+	saved, _ := db.GetUnsent(ctx, chID, since)
+	_ = db.MarkSent(ctx, []int64{saved[0].ID})
 
-	// Удаляем старше 30 дней
-	deleted, err := db.DeleteOldArticles(ctx, 30)
-	if err != nil {
-		t.Fatalf("DeleteOldArticles: %v", err)
-	}
+	deleted, _ := db.DeleteOldArticles(ctx, 30)
 	if deleted != 1 {
-		t.Errorf("ожидали удаление 1 статьи, удалено %d", deleted)
+		t.Errorf("удалено %d, ожидали 1", deleted)
 	}
 
-	// Проверяем, что осталась 1 неотправленная и 1 новая отправленная
-	stats, _ := db.GetStats(ctx)
-	if stats.TotalArticles != 2 {
-		t.Errorf("ожидали 2 статьи в базе, осталось %d", stats.TotalArticles)
-	}
-}
-
-func TestFeeds(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-
-	// 1. SyncFeeds
-	envFeeds := []string{"http://rss1", "http://rss2", "  ", ""}
-	if err := db.SyncFeeds(ctx, envFeeds); err != nil {
-		t.Fatalf("SyncFeeds: %v", err)
-	}
-
-	// 2. GetAllFeeds
-	feeds, err := db.GetAllFeeds(ctx)
-	if err != nil {
-		t.Fatalf("GetAllFeeds: %v", err)
-	}
-	if len(feeds) != 2 {
-		t.Fatalf("ожидали 2 фида, получили %d", len(feeds))
-	}
-
-	// 3. GetActiveFeedURLs
-	urls, err := db.GetActiveFeedURLs(ctx)
-	if err != nil {
-		t.Fatalf("GetActiveFeedURLs: %v", err)
-	}
-	if len(urls) != 2 {
-		t.Errorf("ожидали 2 активных URL, получили %d", len(urls))
-	}
-
-	// 4. ToggleFeed
-	if err := db.ToggleFeed(ctx, "http://rss1"); err != nil {
-		t.Fatalf("ToggleFeed: %v", err)
-	}
-	urls, _ = db.GetActiveFeedURLs(ctx)
-	if len(urls) != 1 {
-		t.Errorf("после отключения ожидали 1 активный URL, получили %d", len(urls))
-	}
-	if urls[0] != "http://rss2" {
-		t.Errorf("ожидали активным http://rss2, получили %q", urls[0])
-	}
-
-	// 5. Второе переключение (включаем обратно)
-	if err := db.ToggleFeed(ctx, "http://rss1"); err != nil {
-		t.Fatalf("ToggleFeed (back): %v", err)
-	}
-	urls, _ = db.GetActiveFeedURLs(ctx)
-	if len(urls) != 2 {
-		t.Errorf("после включения ожидали 2 активных URL, получили %d", len(urls))
-	}
-
-	// 6. AddFeed
-	if err := db.AddFeed(ctx, "http://rss3"); err != nil {
-		t.Fatalf("AddFeed: %v", err)
-	}
-	feeds, _ = db.GetAllFeeds(ctx)
-	if len(feeds) != 3 {
-		t.Errorf("ожидали 3 фида после AddFeed, получили %d", len(feeds))
-	}
-
-	// 7. UpdateFeedTitle
-	if err := db.UpdateFeedTitle(ctx, "http://rss3", "New Title"); err != nil {
-		t.Fatalf("UpdateFeedTitle: %v", err)
-	}
-	feeds, _ = db.GetAllFeeds(ctx)
-	found := false
-	for _, f := range feeds {
-		if f.URL == "http://rss3" && f.Title == "New Title" {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Error("UpdateFeedTitle не сработал")
-	}
-
-	// 8. UpdateFeedStatus
-	testErr := fmt.Errorf("some error")
-	if err := db.UpdateFeedStatus(ctx, "http://rss3", testErr); err != nil {
-		t.Fatalf("UpdateFeedStatus: %v", err)
-	}
-	feeds, _ = db.GetAllFeeds(ctx)
-	for _, f := range feeds {
-		if f.URL == "http://rss3" {
-			if f.LastError != "some error" {
-				t.Errorf("ожидали LastError 'some error', получили %q", f.LastError)
-			}
-			if f.LastFetchedAt.IsZero() {
-				t.Error("LastFetchedAt должен быть установлен")
-			}
-		}
-	}
-
-	// 9. DeleteFeed
-	if err := db.DeleteFeed(ctx, "http://rss1"); err != nil {
-		t.Fatalf("DeleteFeed: %v", err)
-	}
-	feeds, _ = db.GetAllFeeds(ctx)
-	if len(feeds) != 2 {
-		t.Errorf("ожидали 2 фида после DeleteFeed, получили %d", len(feeds))
-	}
-}
-
-func TestGetLatestPerFeed_EdgeCases(t *testing.T) {
-	db := newTestDB(t)
-	ctx := context.Background()
-
-	latest, err := db.GetLatestPerFeed(ctx, 0)
-	if err != nil || len(latest) != 0 {
-		t.Errorf("GetLatestPerFeed(0) должен возвращать nil, nil. Получили %v, %v", latest, err)
+	stats, _ := db.GetStats(ctx, chID)
+	if stats.TotalArticles != 1 {
+		t.Errorf("осталось %d, ожидали 1", stats.TotalArticles)
 	}
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -42,9 +41,7 @@ func main() {
 	defer a.Close()
 
 	if *runNow {
-		ctx := context.Background()
-		a.Fetch(ctx)
-		a.Digest(ctx)
+		a.RunNow()
 		return
 	}
 
@@ -57,9 +54,6 @@ func validateConfig(cfg config.Config) error {
 	}
 	if cfg.TelegramChannelID == "" {
 		return fmt.Errorf("TELEGRAM_CHANNEL_ID не задан")
-	}
-	if len(cfg.FeedURLs) == 0 {
-		return fmt.Errorf("FEED_URLS не задан")
 	}
 	return nil
 }

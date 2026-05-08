@@ -12,21 +12,34 @@ import (
 
 type Article struct {
 	ID          int64
+	ChannelID   int64
 	FeedURL     string
 	FeedTitle   string
 	GUID        string
 	Title       string
 	Link        string
 	Description string
+	Categories  string // JSON-массив или строка через запятую
 	PublishedAt time.Time
 	FetchedAt   time.Time
 	Sent        bool
 }
 
+type Channel struct {
+	ID             int64
+	Name           string
+	TelegramChatID string
+	DigestCron     string
+	Timezone       string
+	Active         bool
+}
+
 type Feed struct {
+	ID            int64
+	ChannelID     int64
 	URL           string
 	Title         string
-	Enabled       bool
+	Active        bool
 	AddedAt       time.Time
 	LastFetchedAt time.Time
 	LastError     string
@@ -68,33 +81,52 @@ func (s *DB) applyPragmas() error {
 
 func (s *DB) migrate() error {
 	_, err := s.db.Exec(`
-		CREATE TABLE IF NOT EXISTS articles (
-			id           INTEGER PRIMARY KEY AUTOINCREMENT,
-			feed_url     TEXT NOT NULL,
-			feed_title   TEXT DEFAULT '',
-			guid         TEXT NOT NULL UNIQUE,
-			title        TEXT NOT NULL,
-			link         TEXT NOT NULL,
-			description  TEXT,
-			published_at INTEGER,
-			fetched_at   INTEGER NOT NULL,
-			sent         INTEGER DEFAULT 0
-		);
-		CREATE INDEX IF NOT EXISTS idx_articles_sent_fetched ON articles(sent, fetched_at);
-
-		CREATE TABLE IF NOT EXISTS digests (
-			id         INTEGER PRIMARY KEY AUTOINCREMENT,
-			content    TEXT NOT NULL,
-			created_at INTEGER NOT NULL
+		CREATE TABLE IF NOT EXISTS channels (
+			id               INTEGER PRIMARY KEY AUTOINCREMENT,
+			name             TEXT NOT NULL UNIQUE,
+			telegram_chat_id TEXT NOT NULL,
+			digest_cron      TEXT NOT NULL,
+			timezone         TEXT NOT NULL DEFAULT 'UTC',
+			active           INTEGER NOT NULL DEFAULT 1
 		);
 
 		CREATE TABLE IF NOT EXISTS feeds (
-			url             TEXT PRIMARY KEY,
+			id              INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id      INTEGER NOT NULL,
+			url             TEXT NOT NULL,
 			title           TEXT DEFAULT '',
-			enabled         INTEGER DEFAULT 1,
+			active          INTEGER NOT NULL DEFAULT 1,
 			added_at        INTEGER NOT NULL,
 			last_fetched_at INTEGER,
-			last_error      TEXT
+			last_error      TEXT,
+			FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		);
+
+		CREATE TABLE IF NOT EXISTS articles (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id   INTEGER,
+			feed_url     TEXT NOT NULL,
+			feed_title   TEXT DEFAULT '',
+			guid         TEXT NOT NULL,
+			title        TEXT NOT NULL,
+			link         TEXT NOT NULL,
+			description  TEXT,
+			categories   TEXT,
+			published_at INTEGER,
+			fetched_at   INTEGER NOT NULL,
+			sent         INTEGER DEFAULT 0,
+			UNIQUE(channel_id, guid),
+			FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		);
+		CREATE INDEX IF NOT EXISTS idx_articles_sent_fetched ON articles(sent, fetched_at);
+		CREATE INDEX IF NOT EXISTS idx_articles_channel_sent ON articles(channel_id, sent);
+
+		CREATE TABLE IF NOT EXISTS digests (
+			id         INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id INTEGER,
+			content    TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
 		);
 
 		CREATE TABLE IF NOT EXISTS kv (
@@ -106,130 +138,38 @@ func (s *DB) migrate() error {
 		return err
 	}
 
-	// Миграция для существующей базы: добавляем колонки, если их нет
-	_, _ = s.db.Exec("ALTER TABLE articles ADD COLUMN feed_title TEXT DEFAULT ''")
-	_, _ = s.db.Exec("ALTER TABLE feeds ADD COLUMN last_fetched_at INTEGER")
-	_, _ = s.db.Exec("ALTER TABLE feeds ADD COLUMN last_error TEXT")
+	// Миграции для существующей базы: добавляем колонки только если их нет
+	addColumnIfMissing := func(table, column, definition string) {
+		var count int
+		query := fmt.Sprintf("SELECT count(*) FROM pragma_table_info('%s') WHERE name='%s'", table, column)
+		_ = s.db.QueryRow(query).Scan(&count)
+		if count == 0 {
+			_, _ = s.db.Exec(fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+		}
+	}
+
+	addColumnIfMissing("articles", "channel_id", "INTEGER")
+	addColumnIfMissing("digests", "channel_id", "INTEGER")
+	addColumnIfMissing("articles", "feed_title", "TEXT DEFAULT ''")
+	addColumnIfMissing("articles", "categories", "TEXT")
+	addColumnIfMissing("feeds", "added_at", "INTEGER NOT NULL DEFAULT 0")
+	addColumnIfMissing("feeds", "active", "INTEGER NOT NULL DEFAULT 1")
+	addColumnIfMissing("feeds", "last_fetched_at", "INTEGER")
+	addColumnIfMissing("feeds", "last_error", "TEXT")
 
 	return nil
 }
 
-func (s *DB) SyncFeeds(ctx context.Context, envURLs []string) error {
-	stmt, err := s.db.PrepareContext(ctx, `
-		INSERT OR IGNORE INTO feeds (url, added_at) VALUES (?, ?)
-	`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-
-	now := time.Now().Unix()
-	for _, url := range envURLs {
-		if url = strings.TrimSpace(url); url == "" {
-			continue
-		}
-		if _, err := stmt.ExecContext(ctx, url, now); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *DB) GetActiveFeedURLs(ctx context.Context) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT url FROM feeds WHERE enabled = 1`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var urls []string
-	for rows.Next() {
-		var u string
-		if err := rows.Scan(&u); err != nil {
-			return nil, err
-		}
-		urls = append(urls, u)
-	}
-	return urls, nil
-}
-
-func (s *DB) GetAllFeeds(ctx context.Context) ([]Feed, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT url, title, enabled, added_at, last_fetched_at, last_error 
-		FROM feeds ORDER BY added_at ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var feeds []Feed
-	for rows.Next() {
-		var f Feed
-		var enabled int
-		var addedAt int64
-		var lastFetched *int64
-		var lastErr sql.NullString
-
-		err := rows.Scan(&f.URL, &f.Title, &enabled, &addedAt, &lastFetched, &lastErr)
-		if err != nil {
-			return nil, err
-		}
-		f.Enabled = enabled != 0
-		f.AddedAt = time.Unix(addedAt, 0)
-		if lastFetched != nil {
-			f.LastFetchedAt = time.Unix(*lastFetched, 0)
-		}
-		f.LastError = lastErr.String
-		feeds = append(feeds, f)
-	}
-	return feeds, nil
-}
-
-func (s *DB) ToggleFeed(ctx context.Context, url string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE feeds SET enabled = 1 - enabled WHERE url = ?`, url)
+func (s *DB) SaveDigest(ctx context.Context, channelID int64, content string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO digests (channel_id, content, created_at) VALUES (?, ?, ?)`,
+		channelID, content, time.Now().Unix())
 	return err
 }
 
-func (s *DB) AddFeed(ctx context.Context, url string) error {
-	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO feeds (url, added_at) VALUES (?, ?)
-		ON CONFLICT(url) DO UPDATE SET enabled = 1
-	`, url, time.Now().Unix())
-	return err
-}
-
-func (s *DB) DeleteFeed(ctx context.Context, url string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM feeds WHERE url = ?`, url)
-	return err
-}
-
-func (s *DB) UpdateFeedTitle(ctx context.Context, url, title string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE feeds SET title = ? WHERE url = ?`, title, url)
-	return err
-}
-
-func (s *DB) UpdateFeedStatus(ctx context.Context, url string, err error) error {
-	now := time.Now().Unix()
-	var errMsg string
-	if err != nil {
-		errMsg = err.Error()
-	}
-	_, dbErr := s.db.ExecContext(ctx, `
-		UPDATE feeds SET last_fetched_at = ?, last_error = ? WHERE url = ?
-	`, now, errMsg, url)
-	return dbErr
-}
-
-func (s *DB) SaveDigest(ctx context.Context, content string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO digests (content, created_at) VALUES (?, ?)`,
-		content, time.Now().Unix())
-	return err
-}
-
-func (s *DB) GetLastDigest(ctx context.Context) (string, error) {
+func (s *DB) GetLastDigest(ctx context.Context, channelID int64) (string, error) {
 	var content string
-	query := `SELECT content FROM digests ORDER BY created_at DESC, id DESC LIMIT 1`
-	err := s.db.QueryRowContext(ctx, query).Scan(&content)
+	query := `SELECT content FROM digests WHERE channel_id = ? ORDER BY created_at DESC, id DESC LIMIT 1`
+	err := s.db.QueryRowContext(ctx, query, channelID).Scan(&content)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -246,13 +186,14 @@ func (s *DB) SaveArticles(ctx context.Context, articles []Article) error {
 	}()
 
 	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO articles (feed_url, feed_title, guid, title, link, description, published_at, fetched_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(guid) DO UPDATE SET
+		INSERT INTO articles (channel_id, feed_url, feed_title, guid, title, link, description, categories, published_at, fetched_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(channel_id, guid) DO UPDATE SET
 			feed_title = excluded.feed_title,
 			title = excluded.title,
 			link = excluded.link,
 			description = excluded.description,
+			categories = excluded.categories,
 			published_at = excluded.published_at
 	`)
 	if err != nil {
@@ -266,9 +207,13 @@ func (s *DB) SaveArticles(ctx context.Context, articles []Article) error {
 			v := a.PublishedAt.Unix()
 			pubAt = &v
 		}
+		var channelID any = a.ChannelID
+		if a.ChannelID == 0 {
+			channelID = nil
+		}
 		_, err := stmt.ExecContext(ctx,
-			a.FeedURL, a.FeedTitle, a.GUID, a.Title, a.Link, a.Description,
-			pubAt, a.FetchedAt.Unix(),
+			channelID, a.FeedURL, a.FeedTitle, a.GUID, a.Title, a.Link, a.Description,
+			a.Categories, pubAt, a.FetchedAt.Unix(),
 		)
 		if err != nil {
 			return err
@@ -277,8 +222,8 @@ func (s *DB) SaveArticles(ctx context.Context, articles []Article) error {
 		// Обновляем заголовок в таблице feeds, если он там пустой
 		if a.FeedTitle != "" {
 			_, _ = tx.ExecContext(ctx, `
-				UPDATE feeds SET title = ? WHERE url = ? AND (title IS NULL OR title = '')
-			`, a.FeedTitle, a.FeedURL)
+				UPDATE feeds SET title = ? WHERE url = ? AND channel_id = ? AND (title IS NULL OR title = '')
+			`, a.FeedTitle, a.FeedURL, a.ChannelID)
 		}
 	}
 	return tx.Commit()
@@ -295,13 +240,13 @@ func (s *DB) DeleteOldArticles(ctx context.Context, days int) (int64, error) {
 	return res.RowsAffected()
 }
 
-func (s *DB) GetUnsent(ctx context.Context, since time.Time) ([]Article, error) {
+func (s *DB) GetUnsent(ctx context.Context, channelID int64, since time.Time) ([]Article, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, feed_url, feed_title, guid, title, link, description, published_at, fetched_at
+		SELECT id, channel_id, feed_url, feed_title, guid, title, link, description, categories, published_at, fetched_at
 		FROM articles
-		WHERE sent = 0 AND COALESCE(published_at, fetched_at) >= ?
+		WHERE sent = 0 AND channel_id = ? AND COALESCE(published_at, fetched_at) >= ?
 		ORDER BY COALESCE(published_at, fetched_at) ASC
-	`, since.Unix())
+	`, channelID, since.Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -312,10 +257,14 @@ func (s *DB) GetUnsent(ctx context.Context, since time.Time) ([]Article, error) 
 		var a Article
 		var pubAt *int64
 		var fetchedAt int64
-		err := rows.Scan(&a.ID, &a.FeedURL, &a.FeedTitle, &a.GUID, &a.Title, &a.Link,
-			&a.Description, &pubAt, &fetchedAt)
+		var cID *int64
+		err := rows.Scan(&a.ID, &cID, &a.FeedURL, &a.FeedTitle, &a.GUID, &a.Title, &a.Link,
+			&a.Description, &a.Categories, &pubAt, &fetchedAt)
 		if err != nil {
 			return nil, err
+		}
+		if cID != nil {
+			a.ChannelID = *cID
 		}
 		a.FetchedAt = time.Unix(fetchedAt, 0)
 		if pubAt != nil {
@@ -326,33 +275,34 @@ func (s *DB) GetUnsent(ctx context.Context, since time.Time) ([]Article, error) 
 	return articles, rows.Err()
 }
 
-func (s *DB) GetUnsentCount(ctx context.Context, since time.Time) (int, error) {
+func (s *DB) GetUnsentCount(ctx context.Context, channelID int64, since time.Time) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM articles WHERE sent = 0 AND COALESCE(published_at, fetched_at) >= ?`,
-		since.Unix(),
+		`SELECT COUNT(*) FROM articles WHERE sent = 0 AND channel_id = ? AND COALESCE(published_at, fetched_at) >= ?`,
+		channelID, since.Unix(),
 	).Scan(&count)
 	return count, err
 }
 
-func (s *DB) GetLatestPerFeed(ctx context.Context, limit int) ([]Article, error) {
+func (s *DB) GetLatestPerFeed(ctx context.Context, channelID int64, limit int) ([]Article, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, feed_url, feed_title, guid, title, link, description, published_at, fetched_at, sent
+		SELECT id, channel_id, feed_url, feed_title, guid, title, link, description, categories, published_at, fetched_at, sent
 		FROM (
 			SELECT
-				id, feed_url, feed_title, guid, title, link, description, published_at, fetched_at, sent,
+				id, channel_id, feed_url, feed_title, guid, title, link, description, categories, published_at, fetched_at, sent,
 				ROW_NUMBER() OVER (
 					PARTITION BY feed_url
 					ORDER BY COALESCE(published_at, fetched_at) DESC
 				) AS rn
 			FROM articles
+			WHERE channel_id = ?
 		)
 		WHERE rn <= ?
 		ORDER BY feed_url ASC, COALESCE(published_at, fetched_at) DESC
-	`, limit)
+	`, channelID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -364,10 +314,14 @@ func (s *DB) GetLatestPerFeed(ctx context.Context, limit int) ([]Article, error)
 		var pubAt *int64
 		var fetchedAt int64
 		var sent int
-		err := rows.Scan(&a.ID, &a.FeedURL, &a.FeedTitle, &a.GUID, &a.Title, &a.Link,
-			&a.Description, &pubAt, &fetchedAt, &sent)
+		var cID *int64
+		err := rows.Scan(&a.ID, &cID, &a.FeedURL, &a.FeedTitle, &a.GUID, &a.Title, &a.Link,
+			&a.Description, &a.Categories, &pubAt, &fetchedAt, &sent)
 		if err != nil {
 			return nil, err
+		}
+		if cID != nil {
+			a.ChannelID = *cID
 		}
 		a.FetchedAt = time.Unix(fetchedAt, 0)
 		if pubAt != nil {
@@ -385,7 +339,7 @@ type Stats struct {
 	LastFetchedAt time.Time
 }
 
-func (s *DB) GetStats(ctx context.Context) (Stats, error) {
+func (s *DB) GetStats(ctx context.Context, channelID int64) (Stats, error) {
 	var st Stats
 	var lastFetch *int64
 	err := s.db.QueryRowContext(ctx, `
@@ -394,7 +348,8 @@ func (s *DB) GetStats(ctx context.Context) (Stats, error) {
 			COALESCE(SUM(sent), 0),
 			MAX(fetched_at)
 		FROM articles
-	`).Scan(&st.TotalArticles, &st.SentArticles, &lastFetch)
+		WHERE channel_id = ?
+	`, channelID).Scan(&st.TotalArticles, &st.SentArticles, &lastFetch)
 	if err != nil {
 		return st, err
 	}
@@ -420,6 +375,108 @@ func (s *DB) MarkSent(ctx context.Context, ids []int64) error {
 	return err
 }
 
+func (s *DB) GetDefaultChannel(ctx context.Context) (int64, error) {
+	var id int64
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM channels LIMIT 1`).Scan(&id)
+	if err == sql.ErrNoRows {
+		return s.UpsertChannel(ctx, Channel{Name: "Default", TelegramChatID: "0", DigestCron: "0 9 * * *", Active: true})
+	}
+	return id, err
+}
+
+func (s *DB) AddFeed(ctx context.Context, url string) error {
+	chID, err := s.GetDefaultChannel(ctx)
+	if err != nil {
+		return err
+	}
+	return s.UpsertFeed(ctx, Feed{ChannelID: chID, URL: url, Active: true})
+}
+
+func (s *DB) GetAllFeeds(ctx context.Context) ([]Feed, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, channel_id, url, title, active, added_at, last_fetched_at, last_error 
+		FROM feeds ORDER BY added_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var feeds []Feed
+	for rows.Next() {
+		var f Feed
+		var active int
+		var addedAt int64
+		var lastFetched *int64
+		var lastErr sql.NullString
+		if err := rows.Scan(&f.ID, &f.ChannelID, &f.URL, &f.Title, &active, &addedAt, &lastFetched, &lastErr); err != nil {
+			return nil, err
+		}
+		f.Active = active != 0
+		f.AddedAt = time.Unix(addedAt, 0)
+		if lastFetched != nil {
+			f.LastFetchedAt = time.Unix(*lastFetched, 0)
+		}
+		f.LastError = lastErr.String
+		feeds = append(feeds, f)
+	}
+	return feeds, nil
+}
+
+func (s *DB) SyncFeeds(ctx context.Context, envURLs []string) error {
+	chID, err := s.GetDefaultChannel(ctx)
+	if err != nil {
+		return err
+	}
+	for _, url := range envURLs {
+		_ = s.UpsertFeed(ctx, Feed{ChannelID: chID, URL: url, Active: true})
+	}
+	return nil
+}
+
+func (s *DB) GetActiveFeedURLs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT url FROM feeds WHERE active = 1`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var urls []string
+	for rows.Next() {
+		var u string
+		if err := rows.Scan(&u); err != nil {
+			return nil, err
+		}
+		urls = append(urls, u)
+	}
+	return urls, nil
+}
+
+func (s *DB) ToggleFeed(ctx context.Context, url string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE feeds SET active = 1 - active WHERE url = ?`, url)
+	return err
+}
+
+func (s *DB) UpdateFeedTitle(ctx context.Context, url, title string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE feeds SET title = ? WHERE url = ?`, title, url)
+	return err
+}
+
+func (s *DB) UpdateFeedTitleByID(ctx context.Context, id int64, title string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE feeds SET title = ? WHERE id = ?`, title, id)
+	return err
+}
+
+func (s *DB) UpdateFeedStatus(ctx context.Context, url string, err error) error {
+	now := time.Now().Unix()
+	var errMsg string
+	if err != nil {
+		errMsg = err.Error()
+	}
+	_, dbErr := s.db.ExecContext(ctx, `
+		UPDATE feeds SET last_fetched_at = ?, last_error = ? WHERE url = ?
+	`, now, errMsg, url)
+	return dbErr
+}
+
 func (s *DB) SetState(ctx context.Context, key, value string) error {
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO kv (key, value) VALUES (?, ?)
@@ -436,3 +493,108 @@ func (s *DB) GetState(ctx context.Context, key string) (string, error) {
 	}
 	return val, err
 }
+
+func (s *DB) GetChannels(ctx context.Context) ([]Channel, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, telegram_chat_id, digest_cron, timezone, active FROM channels`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var channels []Channel
+	for rows.Next() {
+		var c Channel
+		var active int
+		if err := rows.Scan(&c.ID, &c.Name, &c.TelegramChatID, &c.DigestCron, &c.Timezone, &active); err != nil {
+			return nil, err
+		}
+		c.Active = active != 0
+		channels = append(channels, c)
+	}
+	return channels, nil
+}
+
+func (s *DB) GetFeeds(ctx context.Context, channelID int64) ([]Feed, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, channel_id, url, title, active, added_at, last_fetched_at, last_error 
+		FROM feeds WHERE channel_id = ?`, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var feeds []Feed
+	for rows.Next() {
+		var f Feed
+		var active int
+		var addedAt int64
+		var lastFetched *int64
+		var lastErr sql.NullString
+		if err := rows.Scan(&f.ID, &f.ChannelID, &f.URL, &f.Title, &active, &addedAt, &lastFetched, &lastErr); err != nil {
+			return nil, err
+		}
+		f.Active = active != 0
+		f.AddedAt = time.Unix(addedAt, 0)
+		if lastFetched != nil {
+			f.LastFetchedAt = time.Unix(*lastFetched, 0)
+		}
+		f.LastError = lastErr.String
+		feeds = append(feeds, f)
+	}
+	return feeds, nil
+}
+
+func (s *DB) UpsertChannel(ctx context.Context, c Channel) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+		INSERT INTO channels (name, telegram_chat_id, digest_cron, timezone, active)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(name) DO UPDATE SET
+			telegram_chat_id = excluded.telegram_chat_id,
+			digest_cron = excluded.digest_cron,
+			timezone = excluded.timezone,
+			active = excluded.active
+	`, c.Name, c.TelegramChatID, c.DigestCron, c.Timezone, c.Active)
+	if err != nil {
+		return 0, err
+	}
+	if c.ID != 0 {
+		return c.ID, nil
+	}
+	return res.LastInsertId()
+}
+
+func (s *DB) UpsertFeed(ctx context.Context, f Feed) error {
+	var err error
+	if f.ID == 0 {
+		_, err = s.db.ExecContext(ctx, `
+			INSERT INTO feeds (channel_id, url, title, active, added_at)
+			VALUES (?, ?, ?, ?, ?)
+		`, f.ChannelID, f.URL, f.Title, f.Active, time.Now().Unix())
+	} else {
+		_, err = s.db.ExecContext(ctx, `
+			UPDATE feeds SET url = ?, title = ?, active = ? WHERE id = ?
+		`, f.URL, f.Title, f.Active, f.ID)
+	}
+	return err
+}
+
+func (s *DB) DeleteChannel(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id)
+	return err
+}
+
+func (s *DB) DeleteFeed(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM feeds WHERE id = ?`, id)
+	return err
+}
+
+func (s *DB) UpdateChannelName(ctx context.Context, id int64, name string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE channels SET name = ? WHERE id = ?`, name, id)
+	return err
+}
+
+func (s *DB) UpdateChannelCron(ctx context.Context, id int64, cron string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE channels SET digest_cron = ? WHERE id = ?`, cron, id)
+	return err
+}
+

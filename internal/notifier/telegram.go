@@ -47,10 +47,14 @@ func NewTelegram(token, channelID string) (*Telegram, error) {
 }
 
 func (t *Telegram) Send(ctx context.Context, text string) error {
-	return t.SendToRecipient(ctx, t.chat, text)
+	return t.SendToChat(ctx, t.chat.Recipient(), text)
 }
 
-func (t *Telegram) SendToRecipient(ctx context.Context, to telebot.Recipient, text string) error {
+func (t *Telegram) SendToChat(ctx context.Context, chatID, text string) error {
+	chat, err := parseRecipient(chatID)
+	if err != nil {
+		return err
+	}
 	opts := &telebot.SendOptions{
 		ParseMode:             telebot.ModeHTML,
 		DisableWebPagePreview: true,
@@ -58,11 +62,11 @@ func (t *Telegram) SendToRecipient(ctx context.Context, to telebot.Recipient, te
 	for _, chunk := range splitMessage(text, maxMessageLen) {
 		chunk := chunk
 		err := retry.Do(ctx, 3, func() error {
-			_, err := t.bot.Send(to, chunk, opts)
+			_, err := t.bot.Send(chat, chunk, opts)
 			return err
 		})
 		if err != nil {
-			return fmt.Errorf("telegram send: %w", err)
+			return fmt.Errorf("telegram send to %s: %w", chatID, err)
 		}
 	}
 	return nil
@@ -72,7 +76,29 @@ func (t *Telegram) SendToAdmin(ctx context.Context, adminID int64, text string) 
 	if adminID == 0 {
 		return nil
 	}
-	return t.SendToRecipient(ctx, numericRecipient(adminID), text)
+	return t.SendToChat(ctx, strconv.FormatInt(adminID, 10), text)
+}
+
+func (t *Telegram) GetChatTitle(chatID string) (string, error) {
+	chat, err := parseRecipient(chatID)
+	if err != nil {
+		return "", err
+	}
+	c, err := t.bot.ChatByUsername(chat.Recipient())
+	if err != nil {
+		// Если по юзернейму не вышло, пробуем как ID
+		// В telebot.v3 ChatByID принимает int64, а ChatByUsername принимает string.
+		id, parseErr := strconv.ParseInt(chat.Recipient(), 10, 64)
+		if parseErr == nil {
+			c, err = t.bot.ChatByID(id)
+		} else {
+			c, err = t.bot.ChatByUsername(chat.Recipient())
+		}
+	}
+	if err != nil {
+		return "", err
+	}
+	return c.Title, nil
 }
 
 // parseRecipient принимает "@username" или числовой ID канала.
@@ -211,7 +237,7 @@ func (t *Telegram) makeFeedsKeyboard(feeds []storage.Feed) *telebot.ReplyMarkup 
 
 	for _, f := range feeds {
 		status := "✅"
-		if !f.Enabled {
+		if !f.Active {
 			status = "❌"
 		}
 		label := f.Title
