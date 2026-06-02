@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ru" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>bot-news Dashboard</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <script src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js" defer></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { background-color: #0f172a; color: #f8fafc; }
+        .htmx-indicator { display: none; }
+        .htmx-request .htmx-indicator { display: block; }
+        .htmx-request.htmx-indicator { display: block; }
+    </style>
+</head>
+<body class="p-4 md:p-8 font-sans" hx-headers='{"X-HTMX-Token": "{{.Token}}"}' hx-indicator="#progress-bar">
+    <!-- Глобальный индикатор загрузки -->
+    <div id="progress-bar" class="fixed top-0 left-0 w-full h-1 z-[100] htmx-indicator">
+        <div class="h-full bg-sky-500 animate-[loading_2s_ease-in-out_infinite] origin-left"></div>
+    </div>
+    
+    <div id="spinner" class="fixed top-4 right-4 z-50 htmx-indicator">
+        <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-sky-400"></div>
+    </div>
+    
+    <style>
+        @keyframes loading {
+            0% { transform: scaleX(0); }
+            50% { transform: scaleX(0.7); }
+            100% { transform: scaleX(1); opacity: 0; }
+        }
+        .htmx-request#progress-bar, .htmx-request #progress-bar { display: block; }
+        .htmx-request#spinner, .htmx-request #spinner { display: block; }
+    </style>
+    <div class="max-w-6xl mx-auto">
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
+            <h1 class="text-3xl font-bold text-sky-400 flex items-center gap-3">
+                bot-news
+                <span class="text-xs font-normal bg-slate-800 text-slate-400 px-2 py-1 rounded border border-slate-700">
+                    v{{.Version}}
+                </span>
+            </h1>
+            <div class="flex gap-2">
+                <button hx-post="/trigger/fetch-all{{if not .TLSEnabled}}?token={{.Token}}{{end}}" 
+                        hx-swap="none"
+                        class="bg-sky-600 hover:bg-sky-500 px-4 py-2 rounded text-sm font-medium transition flex items-center gap-2">
+                    <span class="inline-block htmx-indicator animate-spin">🔄</span>
+                    🔄 Собрать все
+                </button>
+                <button onclick="document.getElementById('add-channel-modal').classList.remove('hidden')" 
+                    class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded text-sm font-medium transition">
+                    + Добавить канал
+                </button>
+            </div>
+        </header>
+
+        <div id="ai-limits-container" hx-get="/dashboard/ai-limits{{if not .TLSEnabled}}?token={{.Token}}{{end}}" hx-trigger="load, every 10s, ai-updated from:body">
+            {{template "ai_limits.html" .}}
+        </div>
+
+        <div id="channel-list" class="grid grid-cols-1 gap-8">
+            {{template "channel_list.html" .}}
+        </div>
+
+        <div id="add-channel-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+            <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 w-full max-w-md shadow-2xl">
+                <h2 class="text-xl font-bold mb-4 text-sky-400">Новый канал</h2>
+                <form hx-post="/trigger/add-channel{{if not .TLSEnabled}}?token={{.Token}}{{end}}" 
+                      hx-target="#channel-list" 
+                      hx-on::after-request="if(event.detail.successful) document.getElementById('add-channel-modal').classList.add('hidden')"
+                      class="flex flex-col gap-4">
+                    <input name="name" placeholder="Название (напр. Технологии)" required class="bg-slate-900 border border-slate-700 rounded p-2 focus:ring-1 focus:ring-sky-500 outline-none">
+                    <input name="chat_id" placeholder="Telegram Chat ID (@channel или -100...)" required class="bg-slate-900 border border-slate-700 rounded p-2 focus:ring-1 focus:ring-sky-500 outline-none">
+                    <input name="cron" value="0 9,21 * * *" placeholder="Cron (напр. 0 9 * * *)" required class="bg-slate-900 border border-slate-700 rounded p-2 focus:ring-1 focus:ring-sky-500 outline-none">
+                    <input name="timezone" value="Europe/Moscow" required class="bg-slate-900 border border-slate-700 rounded p-2 focus:ring-1 focus:ring-sky-500 outline-none">
+                    <div class="flex justify-end gap-2 mt-4">
+                        <button type="button" onclick="document.getElementById('add-channel-modal').classList.add('hidden')" class="px-4 py-2 text-slate-400 hover:text-slate-200">Отмена</button>
+                        <button class="bg-emerald-600 hover:bg-emerald-500 px-6 py-2 rounded font-medium transition">Создать</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <footer class="mt-12 text-center text-slate-600 text-xs border-t border-slate-800 pt-8">
+            &copy; 2026 bot-news · Status: OK
+        </footer>
+    </div>
+</body>
+</html>

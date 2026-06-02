@@ -3,6 +3,7 @@ package summarizer
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -77,6 +78,24 @@ func TestGroqSummarizer_Summarize(t *testing.T) {
 		}
 		if res != "" {
 			t.Errorf("expected empty string for empty articles, got %q", res)
+		}
+	})
+
+	t.Run("RateLimits_Fallback", func(t *testing.T) {
+		mock := &mockChatClient{
+			resp: openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{Message: openai.ChatCompletionMessage{Content: "Summary text"}},
+				},
+			},
+		}
+		g := &GroqSummarizer{client: mock, model: "test-model"}
+		_, _ = g.Summarize(context.Background(), articles)
+
+		// Should have fallback message because mock doesn't have headers
+		limits := g.GetLimits()
+		if !strings.Contains(limits, "AI Активен") {
+			t.Errorf("expected fallback message, got %q", limits)
 		}
 	})
 }

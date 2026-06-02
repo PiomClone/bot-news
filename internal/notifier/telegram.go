@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	telebot "gopkg.in/telebot.v3"
 
@@ -188,6 +189,7 @@ func (t *Telegram) setupCommands(
 		if !allowed(c) {
 			return nil
 		}
+		_ = c.Notify(telebot.Typing)
 		kb := &telebot.ReplyMarkup{}
 		kb.Inline(kb.Row(btnFetch, btnDigest))
 		return c.Reply(onStats(), &telebot.SendOptions{
@@ -200,6 +202,7 @@ func (t *Telegram) setupCommands(
 		if !allowed(c) {
 			return nil
 		}
+		_ = c.Notify(telebot.Typing)
 		kb := &telebot.ReplyMarkup{}
 		kb.Inline(kb.Row(btnFetch, btnDigest))
 		return c.Reply(onLatest(), &telebot.SendOptions{
@@ -212,6 +215,7 @@ func (t *Telegram) setupCommands(
 		if !allowed(c) {
 			return nil
 		}
+		_ = c.Notify(telebot.Typing)
 		feeds, err := onFeeds()
 		if err != nil {
 			return c.Reply("❌ Ошибка получения списка фидов")
@@ -325,25 +329,178 @@ func sourceLabel(feedURL string) string {
 
 // splitMessage делит текст на части.
 func splitMessage(text string, maxLen int) []string {
-	runes := []rune(text)
-	if len(runes) <= maxLen {
+	if len([]rune(text)) <= maxLen {
 		return []string{text}
 	}
+
 	var chunks []string
-	for len(runes) > 0 {
-		end := maxLen
-		if end > len(runes) {
-			end = len(runes)
+	var carry []htmlTag
+	remaining := text
+
+	for len(remaining) > 0 {
+		prefix := renderOpenTags(carry)
+		budget := maxLen - len([]rune(prefix))
+		if budget <= 0 {
+			budget = maxLen
 		}
-		cut := end
-		for i := end - 1; i > 0; i-- {
-			if runes[i] == '\n' {
-				cut = i + 1
+
+		cut, nextCarry := splitPoint(remaining, budget)
+		if cut <= 0 {
+			cut = len(remaining)
+			nextCarry = nil
+		}
+
+		chunkBody := remaining[:cut]
+		chunk := prefix + chunkBody + renderCloseTags(nextCarry)
+		chunks = append(chunks, chunk)
+		remaining = remaining[cut:]
+		carry = nextCarry
+	}
+
+	return chunks
+}
+
+type htmlTag struct {
+	name string
+	open string
+}
+
+func splitPoint(text string, maxLen int) (int, []htmlTag) {
+	if len([]rune(text)) <= maxLen {
+		return len(text), nil
+	}
+
+	type candidate struct {
+		idx   int
+		stack []htmlTag
+		score int
+	}
+
+	var stack []htmlTag
+	var best candidate
+	var lastSafe candidate
+	runes := 0
+
+	for i := 0; i < len(text); {
+		if text[i] == '<' {
+			end := strings.IndexByte(text[i:], '>')
+			if end == -1 {
 				break
 			}
+			end += i + 1
+			token := text[i:end]
+			runes += len([]rune(token))
+			stack = applyHTMLTag(stack, token)
+			if runes+closingRunes(stack) > maxLen {
+				break
+			}
+			lastSafe = candidate{idx: end, stack: cloneTags(stack)}
+			i = end
+			continue
 		}
-		chunks = append(chunks, string(runes[:cut]))
-		runes = runes[cut:]
+
+		r, size := rune(text[i]), 1
+		if r >= utf8.RuneSelf {
+			r, size = utf8.DecodeRuneInString(text[i:])
+		}
+		runes++
+		if runes+closingRunes(stack) > maxLen {
+			break
+		}
+
+		idx := i + size
+		lastSafe = candidate{idx: idx, stack: cloneTags(stack)}
+		switch r {
+		case '\n':
+			best = candidate{idx: idx, stack: cloneTags(stack), score: 3}
+		case ' ', '\t':
+			if best.score <= 2 {
+				best = candidate{idx: idx, stack: cloneTags(stack), score: 2}
+			}
+		default:
+			if best.score <= 1 {
+				best = candidate{idx: idx, stack: cloneTags(stack), score: 1}
+			}
+		}
+		i = idx
 	}
-	return chunks
+
+	if best.idx > 0 {
+		return best.idx, best.stack
+	}
+	if lastSafe.idx > 0 {
+		return lastSafe.idx, lastSafe.stack
+	}
+	return len(text), nil
+}
+
+func applyHTMLTag(stack []htmlTag, token string) []htmlTag {
+	token = strings.TrimSpace(token)
+	if len(token) < 3 || token[0] != '<' || token[len(token)-1] != '>' {
+		return stack
+	}
+	if strings.HasPrefix(token, "<!") || strings.HasPrefix(token, "<?") {
+		return stack
+	}
+	if strings.HasPrefix(token, "</") {
+		name := strings.ToLower(strings.TrimSpace(token[2 : len(token)-1]))
+		for i := len(stack) - 1; i >= 0; i-- {
+			if stack[i].name == name {
+				return stack[:i]
+			}
+		}
+		return stack
+	}
+	if strings.HasSuffix(token, "/>") {
+		return stack
+	}
+
+	body := strings.TrimSpace(token[1 : len(token)-1])
+	if body == "" {
+		return stack
+	}
+	name := body
+	if sp := strings.IndexAny(body, " \t\r\n"); sp >= 0 {
+		name = body[:sp]
+	}
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return stack
+	}
+	return append(stack, htmlTag{name: name, open: token})
+}
+
+func cloneTags(tags []htmlTag) []htmlTag {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make([]htmlTag, len(tags))
+	copy(out, tags)
+	return out
+}
+
+func renderOpenTags(tags []htmlTag) string {
+	var sb strings.Builder
+	for _, tag := range tags {
+		sb.WriteString(tag.open)
+	}
+	return sb.String()
+}
+
+func renderCloseTags(tags []htmlTag) string {
+	var sb strings.Builder
+	for i := len(tags) - 1; i >= 0; i-- {
+		sb.WriteString("</")
+		sb.WriteString(tags[i].name)
+		sb.WriteString(">")
+	}
+	return sb.String()
+}
+
+func closingRunes(tags []htmlTag) int {
+	total := 0
+	for _, tag := range tags {
+		total += len(tag.name) + 3
+	}
+	return total
 }

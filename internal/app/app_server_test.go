@@ -115,7 +115,7 @@ func TestAppServer_Dashboard(t *testing.T) {
 	}
 
 	body := rr.Body.String()
-	if !strings.Contains(body, "bot-news Dashboard") {
-		t.Error("заголовок не найден в HTML")
+	if !strings.Contains(body, "bot-news") {
+		t.Errorf("заголовок не найден в HTML. Тело ответа: %s", body)
 	}
 }

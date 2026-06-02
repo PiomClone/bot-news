@@ -101,6 +101,7 @@ func (s *DB) migrate() error {
 			last_error      TEXT,
 			FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
 		);
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_feeds_channel_url ON feeds(channel_id, url);
 
 		CREATE TABLE IF NOT EXISTS articles (
 			id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -242,10 +243,11 @@ func (s *DB) DeleteOldArticles(ctx context.Context, days int) (int64, error) {
 
 func (s *DB) GetUnsent(ctx context.Context, channelID int64, since time.Time) ([]Article, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT id, channel_id, feed_url, feed_title, guid, title, link, description, categories, published_at, fetched_at
-		FROM articles
-		WHERE sent = 0 AND channel_id = ? AND COALESCE(published_at, fetched_at) >= ?
-		ORDER BY COALESCE(published_at, fetched_at) ASC
+		SELECT a.id, a.channel_id, a.feed_url, a.feed_title, a.guid, a.title, a.link, a.description, a.categories, a.published_at, a.fetched_at
+		FROM articles a
+		JOIN feeds f ON a.feed_url = f.url AND a.channel_id = f.channel_id
+		WHERE a.sent = 0 AND a.channel_id = ? AND f.active = 1 AND COALESCE(a.published_at, a.fetched_at) >= ?
+		ORDER BY COALESCE(a.published_at, a.fetched_at) ASC
 	`, channelID, since.Unix())
 	if err != nil {
 		return nil, err
@@ -258,11 +260,13 @@ func (s *DB) GetUnsent(ctx context.Context, channelID int64, since time.Time) ([
 		var pubAt *int64
 		var fetchedAt int64
 		var cID *int64
+		var categories sql.NullString
 		err := rows.Scan(&a.ID, &cID, &a.FeedURL, &a.FeedTitle, &a.GUID, &a.Title, &a.Link,
-			&a.Description, &a.Categories, &pubAt, &fetchedAt)
+			&a.Description, &categories, &pubAt, &fetchedAt)
 		if err != nil {
 			return nil, err
 		}
+		a.Categories = categories.String
 		if cID != nil {
 			a.ChannelID = *cID
 		}
@@ -278,7 +282,9 @@ func (s *DB) GetUnsent(ctx context.Context, channelID int64, since time.Time) ([
 func (s *DB) GetUnsentCount(ctx context.Context, channelID int64, since time.Time) (int, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM articles WHERE sent = 0 AND channel_id = ? AND COALESCE(published_at, fetched_at) >= ?`,
+		`SELECT COUNT(*) FROM articles a 
+		 JOIN feeds f ON a.feed_url = f.url AND a.channel_id = f.channel_id
+		 WHERE a.sent = 0 AND a.channel_id = ? AND f.active = 1 AND COALESCE(a.published_at, a.fetched_at) >= ?`,
 		channelID, since.Unix(),
 	).Scan(&count)
 	return count, err
@@ -292,13 +298,14 @@ func (s *DB) GetLatestPerFeed(ctx context.Context, channelID int64, limit int) (
 		SELECT id, channel_id, feed_url, feed_title, guid, title, link, description, categories, published_at, fetched_at, sent
 		FROM (
 			SELECT
-				id, channel_id, feed_url, feed_title, guid, title, link, description, categories, published_at, fetched_at, sent,
+				a.id, a.channel_id, a.feed_url, a.feed_title, a.guid, a.title, a.link, a.description, a.categories, a.published_at, a.fetched_at, a.sent,
 				ROW_NUMBER() OVER (
-					PARTITION BY feed_url
-					ORDER BY COALESCE(published_at, fetched_at) DESC
+					PARTITION BY a.feed_url
+					ORDER BY COALESCE(a.published_at, a.fetched_at) DESC
 				) AS rn
-			FROM articles
-			WHERE channel_id = ?
+			FROM articles a
+			JOIN feeds f ON a.feed_url = f.url AND a.channel_id = f.channel_id
+			WHERE a.channel_id = ? AND f.active = 1
 		)
 		WHERE rn <= ?
 		ORDER BY feed_url ASC, COALESCE(published_at, fetched_at) DESC
@@ -315,11 +322,13 @@ func (s *DB) GetLatestPerFeed(ctx context.Context, channelID int64, limit int) (
 		var fetchedAt int64
 		var sent int
 		var cID *int64
+		var categories sql.NullString
 		err := rows.Scan(&a.ID, &cID, &a.FeedURL, &a.FeedTitle, &a.GUID, &a.Title, &a.Link,
-			&a.Description, &a.Categories, &pubAt, &fetchedAt, &sent)
+			&a.Description, &categories, &pubAt, &fetchedAt, &sent)
 		if err != nil {
 			return nil, err
 		}
+		a.Categories = categories.String
 		if cID != nil {
 			a.ChannelID = *cID
 		}
@@ -569,6 +578,9 @@ func (s *DB) UpsertFeed(ctx context.Context, f Feed) error {
 		_, err = s.db.ExecContext(ctx, `
 			INSERT INTO feeds (channel_id, url, title, active, added_at)
 			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(channel_id, url) DO UPDATE SET
+				title = CASE WHEN excluded.title != '' THEN excluded.title ELSE feeds.title END,
+				active = excluded.active
 		`, f.ChannelID, f.URL, f.Title, f.Active, time.Now().Unix())
 	} else {
 		_, err = s.db.ExecContext(ctx, `
@@ -576,6 +588,27 @@ func (s *DB) UpsertFeed(ctx context.Context, f Feed) error {
 		`, f.URL, f.Title, f.Active, f.ID)
 	}
 	return err
+}
+
+func (s *DB) GetFeedByID(ctx context.Context, id int64) (Feed, error) {
+	var f Feed
+	var active int
+	var addedAt int64
+	var lastFetched *int64
+	var lastErr sql.NullString
+	err := s.db.QueryRowContext(ctx, `
+		SELECT id, channel_id, url, title, active, added_at, last_fetched_at, last_error 
+		FROM feeds WHERE id = ?`, id).Scan(&f.ID, &f.ChannelID, &f.URL, &f.Title, &active, &addedAt, &lastFetched, &lastErr)
+	if err != nil {
+		return f, err
+	}
+	f.Active = active != 0
+	f.AddedAt = time.Unix(addedAt, 0)
+	if lastFetched != nil {
+		f.LastFetchedAt = time.Unix(*lastFetched, 0)
+	}
+	f.LastError = lastErr.String
+	return f, nil
 }
 
 func (s *DB) DeleteChannel(ctx context.Context, id int64) error {

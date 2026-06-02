@@ -148,32 +148,58 @@ func (a *App) Run() {
 				},
 				func() string {
 					channels, _ := a.db.GetChannels(ctx)
-					if len(channels) > 0 {
-						return a.StatsText(ctx, channels[0].ID)
+					var sb strings.Builder
+					for _, ch := range channels {
+						if ch.Active {
+							if sb.Len() > 0 {
+								sb.WriteString("\n\n")
+							}
+							sb.WriteString(a.StatsText(ctx, ch.ID))
+						}
 					}
-					return "каналы не найдены"
+					if sb.Len() == 0 {
+						return "активные каналы не найдены"
+					}
+					return sb.String()
 				},
 				func() string {
 					channels, _ := a.db.GetChannels(ctx)
-					if len(channels) > 0 {
-						return a.LatestText(ctx, channels[0].ID)
+					var sb strings.Builder
+					for _, ch := range channels {
+						if ch.Active {
+							if sb.Len() > 0 {
+								sb.WriteString("\n\n")
+							}
+							sb.WriteString(fmt.Sprintf("📝 <b>Канал: %s</b>\n", ch.Name))
+							sb.WriteString(a.LatestText(ctx, ch.ID))
+						}
 					}
-					return "каналы не найдены"
+					if sb.Len() == 0 {
+						return "активные каналы не найдены"
+					}
+					return sb.String()
 				},
 				func() int {
 					channels, _ := a.db.GetChannels(ctx)
-					if len(channels) > 0 {
-						n, _ := a.db.GetUnsentCount(ctx, channels[0].ID, a.digestSince())
-						return n
+					total := 0
+					for _, ch := range channels {
+						if ch.Active {
+							n, _ := a.db.GetUnsentCount(ctx, ch.ID, a.digestSince())
+							total += n
+						}
 					}
-					return 0
+					return total
 				},
 				func() ([]storage.Feed, error) {
 					channels, _ := a.db.GetChannels(ctx)
-					if len(channels) > 0 {
-						return a.db.GetFeeds(ctx, channels[0].ID)
+					var allFeeds []storage.Feed
+					for _, ch := range channels {
+						if ch.Active {
+							feeds, _ := a.db.GetFeeds(ctx, ch.ID)
+							allFeeds = append(allFeeds, feeds...)
+						}
 					}
-					return nil, nil
+					return allFeeds, nil
 				},
 				func(url string) error {
 					channels, _ := a.db.GetChannels(ctx)
@@ -346,7 +372,7 @@ func (a *App) Digest(ctx context.Context, ch storage.Channel) {
 	if len(articles) == 0 {
 		slog.Info("нет новых статей для дайджеста, отправляем heartbeat", "channel", ch.Name)
 		heartbeat := fmt.Sprintf("✅ Дайджест [%s] за %s: новых материалов нет. Система работает.",
-			ch.Name, time.Now().Format("2 January 2006"))
+			ch.Name, time.Now().In(a.loc(ch.Timezone)).Format("2 January 2006"))
 		heartbeat += a.statsFooter(ctx, ch.ID, ch.Timezone, 0)
 
 		if errSend := a.notif.SendToChat(ctx, ch.TelegramChatID, heartbeat); errSend != nil {
@@ -431,6 +457,7 @@ func (a *App) StatsText(ctx context.Context, channelID int64) string {
 func (a *App) LatestText(ctx context.Context, channelID int64) string {
 	articles, err := a.db.GetLatestPerFeed(ctx, channelID, 3)
 	if err != nil {
+		slog.Error("ошибка GetLatestPerFeed", "channelID", channelID, "error", err)
 		return "ошибка получения последних материалов"
 	}
 	if len(articles) == 0 {
@@ -466,9 +493,15 @@ func (a *App) LatestText(ctx context.Context, channelID int64) string {
 }
 
 func (a *App) loc(timezone string) *time.Location {
+	if timezone == "" {
+		timezone = "Europe/Moscow"
+	}
 	loc, err := time.LoadLocation(timezone)
 	if err != nil {
-		return time.UTC
+		loc, err = time.LoadLocation("Europe/Moscow")
+		if err != nil {
+			return time.UTC
+		}
 	}
 	return loc
 }
@@ -508,6 +541,122 @@ func (a *App) cleanup(ctx context.Context) {
 		slog.Info("очистка завершена", "deleted_count", n)
 		msg := fmt.Sprintf("🧹 <b>Техническое обслуживание</b>\n\nБаза данных очищена. Удалено старых статей: %d", n)
 		_ = a.notif.SendToAdmin(ctx, a.cfg.TelegramAdminID, msg)
+	}
+}
+
+func (a *App) getDashboardData(ctx context.Context, token string) interface{} {
+	channels, _ := a.db.GetChannels(ctx)
+
+	type channelData struct {
+		storage.Channel
+		Feeds       []storage.Feed
+		Stats       storage.Stats
+		Unsent      int
+		NextRun     string
+		Description string
+		NextRuns    []string
+		Error       string
+	}
+
+	var data struct {
+		Channels   []channelData
+		AILimits   template.HTML
+		Version    string
+		Token      string
+		TLSEnabled bool
+	}
+
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+
+	for _, ch := range channels {
+		feeds, _ := a.db.GetFeeds(ctx, ch.ID)
+		stats, _ := a.db.GetStats(ctx, ch.ID)
+		unsent, _ := a.db.GetUnsentCount(ctx, ch.ID, a.digestSince())
+
+		nextRun := "—"
+		var nextRuns []string
+		if ch.Active {
+			if sched, err := parser.Parse(ch.DigestCron); err == nil {
+				loc := a.loc(ch.Timezone)
+				curr := time.Now().In(loc)
+				nextRun = sched.Next(curr).Format("02 Jan 15:04")
+				
+				// Заполняем 5 ближайших для превью
+				temp := curr
+				for i := 0; i < 5; i++ {
+					temp = sched.Next(temp)
+					nextRuns = append(nextRuns, temp.Format("02 Jan 15:04"))
+				}
+			}
+		}
+
+		data.Channels = append(data.Channels, channelData{
+			Channel:     ch,
+			Feeds:       feeds,
+			Stats:       stats,
+			Unsent:      unsent,
+			NextRun:     nextRun,
+			Description: a.DescribeCron(ch.DigestCron),
+			NextRuns:    nextRuns,
+		})
+	}
+
+	data.AILimits = template.HTML(a.sum.GetLimits())
+	data.Version = "1.3.0"
+	data.Token = token
+	data.TLSEnabled = a.cfg.TLSEnabled
+
+	return data
+}
+
+func (a *App) getChannelData(ctx context.Context, channelID int64) interface{} {
+	channels, _ := a.db.GetChannels(ctx)
+	var ch storage.Channel
+	for _, c := range channels {
+		if c.ID == channelID {
+			ch = c
+			break
+		}
+	}
+
+	feeds, _ := a.db.GetFeeds(ctx, ch.ID)
+	stats, _ := a.db.GetStats(ctx, ch.ID)
+	unsent, _ := a.db.GetUnsentCount(ctx, ch.ID, a.digestSince())
+
+	nextRun := "—"
+	var nextRuns []string
+	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	if ch.Active {
+		if sched, err := parser.Parse(ch.DigestCron); err == nil {
+			loc := a.loc(ch.Timezone)
+			curr := time.Now().In(loc)
+			nextRun = sched.Next(curr).Format("02 Jan 15:04")
+			
+			temp := curr
+			for i := 0; i < 5; i++ {
+				temp = sched.Next(temp)
+				nextRuns = append(nextRuns, temp.Format("02 Jan 15:04"))
+			}
+		}
+	}
+
+	return struct {
+		storage.Channel
+		Feeds       []storage.Feed
+		Stats       storage.Stats
+		Unsent      int
+		NextRun     string
+		Description string
+		NextRuns    []string
+		Error       string
+	}{
+		Channel:     ch,
+		Feeds:       feeds,
+		Stats:       stats,
+		Unsent:      unsent,
+		NextRun:     nextRun,
+		Description: a.DescribeCron(ch.DigestCron),
+		NextRuns:    nextRuns,
 	}
 }
 
@@ -598,20 +747,122 @@ func (a *App) runAdminServer(ctx context.Context) {
 	}
 }
 
+func (a *App) DescribeCron(spec string) string {
+	parts := strings.Fields(spec)
+	if len(parts) != 5 {
+		return ""
+	}
+
+	minute, hour, dom, month, dow := parts[0], parts[1], parts[2], parts[3], parts[4]
+
+	// Очень упрощенный парсер для частых случаев
+	if dom == "*" && month == "*" && dow == "*" {
+		if minute == "0" {
+			if hour == "*" {
+				return "Каждый час"
+			}
+			if !strings.Contains(hour, ",") && !strings.Contains(hour, "/") {
+				return fmt.Sprintf("Ежедневно в %s:00", hour)
+			}
+			if strings.Contains(hour, ",") {
+				return fmt.Sprintf("Ежедневно в %s:00", strings.ReplaceAll(hour, ",", " и "))
+			}
+		}
+		if strings.HasPrefix(minute, "*/") {
+			return fmt.Sprintf("Каждые %s мин.", strings.TrimPrefix(minute, "*/"))
+		}
+	}
+
+	if dow != "*" && dom == "*" {
+		days := map[string]string{
+			"1-5": "по будням",
+			"0,6": "по выходным",
+			"1":   "по понедельникам",
+			"5":   "по пятницам",
+		}
+		if d, ok := days[dow]; ok {
+			return fmt.Sprintf("Ежедневно %s в %s:%s", d, hour, minute)
+		}
+	}
+
+	return "" // Если слишком сложно, вернем пустоту
+}
+
 func (a *App) RegisterTriggers(ctx context.Context, mux *http.ServeMux) {
+	mux.HandleFunc("GET /dashboard/cron-preview", a.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		cronSpec := strings.TrimSpace(r.URL.Query().Get("cron"))
+		timezone := r.URL.Query().Get("timezone")
+		if timezone == "" {
+			timezone = "Europe/Moscow"
+		}
+
+		if cronSpec == "" {
+			fmt.Fprint(w, `<span class="text-slate-500 text-[10px]">Введите крон-выражение</span>`)
+			return
+		}
+
+		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+		sched, err := parser.Parse(cronSpec)
+		
+		data := struct {
+			Error       string
+			Description string
+			NextRuns    []string
+		}{}
+
+		if err != nil {
+			data.Error = err.Error()
+		} else {
+			data.Description = a.DescribeCron(cronSpec)
+			loc := a.loc(timezone)
+			curr := time.Now().In(loc)
+			for i := 0; i < 5; i++ {
+				curr = sched.Next(curr)
+				data.NextRuns = append(data.NextRuns, curr.Format("02 Jan 15:04"))
+			}
+		}
+
+		_ = a.renderTemplate(w, "cron-preview", data)
+	}))
+
+	mux.HandleFunc("GET /dashboard/ai-limits", a.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		// Принудительно читаем из БД, если там свежее
+		if limits, err := a.db.GetState(ctx, "ai_limits"); err == nil && limits != "" {
+			a.sum.SetLimits(limits)
+		}
+
+		data := struct {
+			AILimits template.HTML
+		}{
+			AILimits: template.HTML(a.sum.GetLimits()),
+		}
+		_ = a.renderTemplate(w, "ai-limits", data)
+	}))
+
 	mux.HandleFunc("POST /trigger/fetch-all", a.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		go a.FetchAll(ctx)
+		a.FetchAll(ctx)
+		if r.Header.Get("HX-Request") != "" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		a.redirect(w, r)
 	}))
 
 	mux.HandleFunc("POST /trigger/digest", a.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+		if id == 0 {
+			id, _ = strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+		}
 		channels, _ := a.db.GetChannels(ctx)
 		for _, ch := range channels {
 			if ch.ID == id {
-				go a.Digest(ctx, ch)
+				a.Digest(ctx, ch)
 				break
 			}
+		}
+		if r.Header.Get("HX-Request") != "" {
+			w.WriteHeader(http.StatusOK)
+			return
 		}
 		a.redirect(w, r)
 	}))
@@ -632,47 +883,92 @@ func (a *App) RegisterTriggers(ctx context.Context, mux *http.ServeMux) {
 			Active:         true,
 		})
 		a.setupCron(ctx)
+
+		if r.Header.Get("HX-Request") != "" {
+			data := a.getDashboardData(ctx, r.URL.Query().Get("token"))
+			_ = a.renderTemplate(w, "channel-list", data)
+			return
+		}
 		a.redirect(w, r)
 	}))
 
 	mux.HandleFunc("POST /trigger/del-channel", a.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+		if id == 0 {
+			id, _ = strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+		}
 		_ = a.db.DeleteChannel(ctx, id)
 		a.setupCron(ctx)
+
+		if r.Header.Get("HX-Request") != "" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		a.redirect(w, r)
 	}))
 
 	mux.HandleFunc("POST /trigger/add-feed", a.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		chID, _ := strconv.ParseInt(r.FormValue("channel_id"), 10, 64)
+		if chID == 0 {
+			chID, _ = strconv.ParseInt(r.URL.Query().Get("channel_id"), 10, 64)
+		}
 		_ = a.db.UpsertFeed(ctx, storage.Feed{
 			ChannelID: chID,
 			URL:       r.FormValue("url"),
 			Active:    true,
 		})
+
+		if r.Header.Get("HX-Request") != "" {
+			data := a.getChannelData(ctx, chID)
+			_ = a.renderTemplate(w, "feed-list", data)
+			return
+		}
 		a.redirect(w, r)
 	}))
 
 	mux.HandleFunc("POST /trigger/del-feed", a.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+		if id == 0 {
+			id, _ = strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+		}
+		chID, _ := strconv.ParseInt(r.URL.Query().Get("channel_id"), 10, 64)
+
 		_ = a.db.DeleteFeed(ctx, id)
+
+		if r.Header.Get("HX-Request") != "" {
+			data := a.getChannelData(ctx, chID)
+			_ = a.renderTemplate(w, "feed-list", data)
+			return
+		}
 		a.redirect(w, r)
 	}))
 
 	mux.HandleFunc("POST /trigger/update-feed-title", a.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+		if id == 0 {
+			id, _ = strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+		}
 		title := strings.TrimSpace(r.FormValue("title"))
 		_ = a.db.UpdateFeedTitleByID(ctx, id, title)
+
+		if r.Header.Get("HX-Request") != "" {
+			feed, _ := a.db.GetFeedByID(ctx, id)
+			data := a.getChannelData(ctx, feed.ChannelID)
+			_ = a.renderTemplate(w, "feed-list", data)
+			return
+		}
 		a.redirect(w, r)
 	}))
 
 	mux.HandleFunc("POST /trigger/update-channel-cron", a.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+		if id == 0 {
+			id, _ = strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+		}
 		cronSpec := strings.TrimSpace(r.FormValue("cron"))
 		if cronSpec != "" {
-			// Валидация cron-выражения
 			parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 			if _, err := parser.Parse(cronSpec); err != nil {
-				slog.Error("невалидный cron", "spec", cronSpec, "error", err)
 				http.Error(w, "Невалидный формат Cron: "+err.Error(), http.StatusBadRequest)
 				return
 			}
@@ -682,45 +978,89 @@ func (a *App) RegisterTriggers(ctx context.Context, mux *http.ServeMux) {
 			}
 			a.setupCron(ctx)
 		}
+
+		if r.Header.Get("HX-Request") != "" {
+			data := a.getChannelData(ctx, id)
+			_ = a.renderTemplate(w, "channel-card", data)
+			return
+		}
 		a.redirect(w, r)
 	}))
 
 	mux.HandleFunc("POST /trigger/latest-bot", a.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+		if id == 0 {
+			id, _ = strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+		}
 		channels, _ := a.db.GetChannels(ctx)
-		if len(channels) > 0 {
-			go func() {
-				text := a.LatestText(ctx, channels[0].ID)
-				_ = a.notif.SendToAdmin(ctx, a.cfg.TelegramAdminID, text)
-			}()
+		var targetCh *storage.Channel
+		for _, ch := range channels {
+			if ch.ID == id {
+				targetCh = &ch
+				break
+			}
+		}
+		if targetCh != nil {
+			text := a.LatestText(ctx, targetCh.ID)
+			_ = a.notif.SendToAdmin(ctx, a.cfg.TelegramAdminID, text)
+		}
+		if r.Header.Get("HX-Request") != "" {
+			w.WriteHeader(http.StatusOK)
+			return
 		}
 		a.redirect(w, r)
 	}))
 
 	mux.HandleFunc("POST /trigger/digest-bot", a.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
+		id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+		if id == 0 {
+			id, _ = strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+		}
 		channels, _ := a.db.GetChannels(ctx)
-		if len(channels) > 0 {
-			go func() {
-				since := a.digestSince()
-				articles, _ := a.db.GetUnsent(ctx, channels[0].ID, since)
-				if len(articles) > 0 {
-					text, _ := a.sum.Summarize(ctx, articles)
-					text += a.statsFooter(ctx, channels[0].ID, channels[0].Timezone, len(articles))
-					_ = a.notif.SendToAdmin(ctx, a.cfg.TelegramAdminID, "👤 <b>Персональный предпросмотр дайджеста:</b>\n\n"+text)
-					// Обновляем лимиты в базе после саммаризации
-					_ = a.db.SetState(ctx, "ai_limits", a.sum.GetLimits())
-				} else {
-					_ = a.notif.SendToAdmin(ctx, a.cfg.TelegramAdminID, "📭 Новых статей для дайджеста нет.")
-				}
-			}()
+		var targetCh *storage.Channel
+		for _, ch := range channels {
+			if ch.ID == id {
+				targetCh = &ch
+				break
+			}
+		}
+
+		if targetCh != nil {
+			since := a.digestSince()
+			articles, _ := a.db.GetUnsent(ctx, targetCh.ID, since)
+			if len(articles) > 0 {
+				text, _ := a.sum.Summarize(ctx, articles)
+				text += a.statsFooter(ctx, targetCh.ID, targetCh.Timezone, len(articles))
+				_ = a.notif.SendToAdmin(ctx, a.cfg.TelegramAdminID, fmt.Sprintf("👤 <b>Черновик дайджеста [%s]:</b>\n\n", targetCh.Name)+text)
+				_ = a.db.SetState(ctx, "ai_limits", a.sum.GetLimits())
+			} else {
+				_ = a.notif.SendToAdmin(ctx, a.cfg.TelegramAdminID, fmt.Sprintf("📭 В канале [%s] новых статей нет.", targetCh.Name))
+			}
+		}
+		if r.Header.Get("HX-Request") != "" {
+			w.WriteHeader(http.StatusOK)
+			return
 		}
 		a.redirect(w, r)
 	}))
 
 	mux.HandleFunc("POST /trigger/update-channel-name", a.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
 		id, _ := strconv.ParseInt(r.FormValue("id"), 10, 64)
+		if id == 0 {
+			id, _ = strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+		}
 		chatID := r.FormValue("chat_id")
+		if chatID == "" {
+			chatID = r.URL.Query().Get("chat_id")
+		}
 		if title, err := a.notif.GetChatTitle(chatID); err == nil && title != "" {
 			_ = a.db.UpdateChannelName(ctx, id, title)
+		}
+
+		if r.Header.Get("HX-Request") != "" {
+			data := a.getChannelData(ctx, id)
+			_ = a.renderTemplate(w, "channel-card", data)
+			return
 		}
 		a.redirect(w, r)
 	}))
@@ -728,247 +1068,15 @@ func (a *App) RegisterTriggers(ctx context.Context, mux *http.ServeMux) {
 
 func (a *App) HandleDashboard(ctx context.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		channels, _ := a.db.GetChannels(ctx)
 		token := r.URL.Query().Get("token")
-
-		type channelData struct {
-			storage.Channel
-			Feeds   []storage.Feed
-			Stats   storage.Stats
-			Unsent  int
-			NextRun string
-		}
-
-		var data struct {
-			Channels   []channelData
-			AILimits   template.HTML
-			Version    string
-			Token      string
-			TLSEnabled bool
-		}
-
-		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-
-		for _, ch := range channels {
-			feeds, _ := a.db.GetFeeds(ctx, ch.ID)
-			stats, _ := a.db.GetStats(ctx, ch.ID)
-			unsent, _ := a.db.GetUnsentCount(ctx, ch.ID, a.digestSince())
-
-			nextRun := "—"
-			if ch.Active {
-				if sched, err := parser.Parse(ch.DigestCron); err == nil {
-					nextRun = sched.Next(time.Now()).Format("02 Jan 15:04")
-				}
-			}
-
-			data.Channels = append(data.Channels, channelData{
-				Channel: ch,
-				Feeds:   feeds,
-				Stats:   stats,
-				Unsent:  unsent,
-				NextRun: nextRun,
-			})
-		}
-
-		data.AILimits = template.HTML(a.sum.GetLimits())
-		data.Version = "1.2.0"
-		data.Token = token
-		data.TLSEnabled = a.cfg.TLSEnabled
-
-		if data.AILimits == "" {
-			data.AILimits = "🤖 <i>Статистика AI будет доступна после первого запроса</i>"
-		}
+		data := a.getDashboardData(ctx, token)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_ = dashboardTmpl.Execute(w, data)
+		if err := a.renderTemplate(w, "dashboard", data); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}
 }
-
-var dashboardTmpl = template.Must(template.New("dashboard").Parse(`
-<!DOCTYPE html>
-<html lang="ru" class="dark">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>bot-news Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        body { background-color: #0f172a; color: #f8fafc; }
-    </style>
-</head>
-<body class="p-4 md:p-8 font-sans">
-    <div class="max-w-6xl mx-auto">
-        <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 gap-4">
-            <h1 class="text-3xl font-bold text-sky-400 flex items-center gap-3">
-                bot-news
-                <span class="text-xs font-normal bg-slate-800 text-slate-400 px-2 py-1 rounded border border-slate-700">
-                    v{{.Version}}
-                </span>
-            </h1>
-            <div class="flex gap-2">
-                <form action="/trigger/latest-bot{{if not .TLSEnabled}}?token={{.Token}}{{end}}" method="POST">
-                    <button class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded text-sm font-medium transition" title="Отправить последние новости в бота">
-                        🤖 Latest
-                    </button>
-                </form>
-                <form action="/trigger/digest-bot{{if not .TLSEnabled}}?token={{.Token}}{{end}}" method="POST">
-                    <button class="bg-violet-600 hover:bg-violet-500 px-4 py-2 rounded text-sm font-medium transition" title="Отправить черновик дайджеста в бота">
-                        👤 Digest
-                    </button>
-                </form>
-                <form action="/trigger/fetch-all{{if not .TLSEnabled}}?token={{.Token}}{{end}}" method="POST">
-                    <button class="bg-sky-600 hover:bg-sky-500 px-4 py-2 rounded text-sm font-medium transition">
-                        🔄 Собрать все
-                    </button>
-                </form>
-                <button onclick="document.getElementById('add-channel-modal').classList.remove('hidden')" 
-                    class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded text-sm font-medium transition">
-                    + Добавить канал
-                </button>
-            </div>
-        </header>
-
-        {{if .AILimits}}
-        <div class="mb-8 px-4 py-2 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-xs text-indigo-300">
-            {{.AILimits}}
-        </div>
-        {{end}}
-
-        <div class="grid grid-cols-1 gap-8">
-            {{range .Channels}}
-            <div class="bg-slate-800/30 rounded-xl border border-slate-700 overflow-hidden shadow-xl">
-                <div class="px-6 py-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
-                    <div class="flex items-center gap-3">
-                        <div>
-                            <div class="flex items-center gap-2">
-                                <h2 class="text-xl font-bold text-sky-400">{{.Name}}</h2>
-                                <form action="/trigger/update-channel-name{{if not $.TLSEnabled}}?token={{$.Token}}{{end}}" method="POST" class="inline">
-                                    <input type="hidden" name="id" value="{{.ID}}">
-                                    <input type="hidden" name="chat_id" value="{{.TelegramChatID}}">
-                                    <button type="submit" class="text-slate-500 hover:text-sky-400 transition-colors" title="Обновить название из Telegram">
-                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-                                            <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
-                                        </svg>
-                                    </button>
-                                </form>
-                            </div>
-                            <div class="text-xs text-slate-500 flex items-center gap-2">
-                                <span>Chat: {{.TelegramChatID}}</span>
-                                <span class="text-slate-700">|</span>
-                                <form action="/trigger/update-channel-cron{{if not $.TLSEnabled}}?token={{$.Token}}{{end}}" method="POST" class="flex items-center gap-1">
-                                    <input type="hidden" name="id" value="{{.ID}}">
-                                    <span class="text-slate-500">Cron:</span>
-                                    <input type="text" name="cron" value="{{.DigestCron}}" 
-                                        class="bg-transparent border-b border-dotted border-slate-700 hover:border-sky-500 
-                                        focus:border-sky-500 focus:outline-none transition-colors 
-                                        text-slate-400 py-0 w-32"
-                                        title="Формат: минута час день месяц день_недели (напр. 0 9,21 * * *)"
-                                        onchange="this.form.submit()">
-                                </form>
-                                <span class="text-slate-700">|</span>
-                                <span class="text-emerald-400 font-medium" title="Следующая отправка дайджеста">Next: {{.NextRun}}</span>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="flex gap-2">
-                        <form action="/trigger/digest{{if not $.TLSEnabled}}?token={{$.Token}}{{end}}" method="POST">
-                            <input type="hidden" name="id" value="{{.ID}}">
-                            <button class="text-xs bg-violet-600 hover:bg-violet-500 px-3 py-1 rounded transition">Digest Now</button>
-                        </form>
-                        <form action="/trigger/del-channel{{if not $.TLSEnabled}}?token={{$.Token}}{{end}}" method="POST" onsubmit="return confirm('Удалить канал?')">
-                            <input type="hidden" name="id" value="{{.ID}}">
-                            <button class="text-xs text-rose-400 hover:text-rose-300">Удалить</button>
-                        </form>
-                    </div>
-                </div>
-                
-                <div class="p-6 grid grid-cols-2 md:grid-cols-4 gap-4 bg-slate-900/20">
-                    <div class="text-center">
-                        <div class="text-slate-500 text-[10px] uppercase">Собрано</div>
-                        <div class="text-lg font-bold">{{.Stats.TotalArticles}}</div>
-                    </div>
-                    <div class="text-center">
-                        <div class="text-slate-500 text-[10px] uppercase">Отправлено</div>
-                        <div class="text-lg font-bold text-emerald-400">{{.Stats.SentArticles}}</div>
-                    </div>
-                    <div class="text-center">
-                        <div class="text-slate-500 text-[10px] uppercase">В очереди</div>
-                        <div class="text-lg font-bold text-amber-400">{{.Unsent}}</div>
-                    </div>
-                    <div class="text-center">
-                        <div class="text-slate-500 text-[10px] uppercase">Последний сбор</div>
-                        <div class="text-sm font-medium pt-1">{{if .Stats.LastFetchedAt.IsZero}}никогда{{else}}{{.Stats.LastFetchedAt.Format "02 Jan 15:04"}}{{end}}</div>
-                    </div>
-                </div>
-
-                <div class="px-6 py-4">
-                    <h3 class="text-sm font-semibold mb-3 text-slate-400">📡 Источники RSS ({{len .Feeds}})</h3>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-left text-xs">
-                            <tbody class="divide-y divide-slate-700/50">
-                                {{range .Feeds}}
-                                <tr class="group">
-                                    <td class="py-2 w-16">
-                                        <span class="px-2 py-0.5 rounded-full {{if .Active}}bg-emerald-500/10 text-emerald-400{{else}}bg-slate-500/10 text-slate-400{{end}}">
-                                            {{if .Active}}OK{{else}}Off{{end}}
-                                        </span>
-                                    </td>
-                                    <td class="py-2">
-                                        <form action="/trigger/update-feed-title{{if not $.TLSEnabled}}?token={{$.Token}}{{end}}" method="POST" class="flex items-center">
-                                            <input type="hidden" name="id" value="{{.ID}}">
-                                            <input type="text" name="title" 
-                                                value="{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}" 
-                                                class="bg-transparent border-b border-transparent hover:border-slate-600 
-                                                focus:border-sky-500 focus:outline-none transition-colors font-medium 
-                                                text-slate-200 group-hover:text-sky-400 py-0 w-full"
-                                                onchange="this.form.submit()">
-                                        </form>
-                                        <div class="text-[10px] text-slate-500">{{.URL}}</div>
-                                    </td>
-                                    <td class="py-2 text-right">
-                                        <form action="/trigger/del-feed{{if not $.TLSEnabled}}?token={{$.Token}}{{end}}" method="POST" class="inline">
-                                            <input type="hidden" name="id" value="{{.ID}}">
-                                            <button class="text-rose-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity">×</button>
-                                        </form>
-                                    </td>
-                                </tr>
-                                {{end}}
-                            </tbody>
-                        </table>
-                    </div>
-                    <form action="/trigger/add-feed{{if not $.TLSEnabled}}?token={{$.Token}}{{end}}" method="POST" class="mt-4 flex gap-2">
-                        <input type="hidden" name="channel_id" value="{{.ID}}">
-                        <input type="url" name="url" placeholder="Новый RSS URL" required class="flex-1 bg-slate-900/50 border border-slate-700 rounded px-3 py-1 text-xs">
-                        <button class="bg-sky-600 px-4 py-1 rounded text-xs">Добавить</button>
-                    </form>
-                </div>
-            </div>
-            {{end}}
-        </div>
-
-        <div id="add-channel-modal" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-            <div class="bg-slate-800 rounded-xl border border-slate-700 p-6 w-full max-w-md shadow-2xl">
-                <h2 class="text-xl font-bold mb-4 text-sky-400">Новый канал</h2>
-                <form action="/trigger/add-channel{{if not .TLSEnabled}}?token={{.Token}}{{end}}" method="POST" class="flex flex-col gap-4">
-                    <input name="name" placeholder="Название (напр. Технологии)" required class="bg-slate-900 border border-slate-700 rounded p-2 focus:ring-1 focus:ring-sky-500 outline-none">
-                    <input name="chat_id" placeholder="Telegram Chat ID (@channel или -100...)" required class="bg-slate-900 border border-slate-700 rounded p-2 focus:ring-1 focus:ring-sky-500 outline-none">
-                    <input name="cron" value="0 9,21 * * *" placeholder="Cron (напр. 0 9 * * *)" required class="bg-slate-900 border border-slate-700 rounded p-2 focus:ring-1 focus:ring-sky-500 outline-none">
-                    <input name="timezone" value="Europe/Moscow" required class="bg-slate-900 border border-slate-700 rounded p-2 focus:ring-1 focus:ring-sky-500 outline-none">
-                    <div class="flex justify-end gap-2 mt-4">
-                        <button type="button" onclick="document.getElementById('add-channel-modal').classList.add('hidden')" class="px-4 py-2 text-slate-400 hover:text-slate-200">Отмена</button>
-                        <button class="bg-emerald-600 hover:bg-emerald-500 px-6 py-2 rounded font-medium transition">Создать</button>
-                    </div>
-                </form>
-            </div>
-        </div>
-
-        <footer class="mt-12 text-center text-slate-600 text-xs border-t border-slate-800 pt-8">
-            &copy; 2026 bot-news · Status: OK
-        </footer>
-    </div>
-</body>
-</html>
-`))
 
 func sourceLabel(feedURL string) string {
 	if feedURL == "" {

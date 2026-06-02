@@ -44,8 +44,65 @@ func mustCreateChannel(t *testing.T, db *storage.DB, name string) int64 {
 
 func mustSave(t *testing.T, db *storage.DB, articles []storage.Article) {
 	t.Helper()
+	for _, a := range articles {
+		_ = db.UpsertFeed(context.Background(), storage.Feed{
+			ChannelID: a.ChannelID,
+			URL:       a.FeedURL,
+			Active:    true,
+		})
+	}
 	if err := db.SaveArticles(context.Background(), articles); err != nil {
 		t.Fatalf("SaveArticles: %v", err)
+	}
+}
+
+func TestGetLatestPerFeed(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	chID := mustCreateChannel(t, db, "test")
+
+	// Сначала создаем фиды, так как теперь есть JOIN
+	_ = db.UpsertFeed(ctx, storage.Feed{ChannelID: chID, URL: "f1", Active: true})
+	_ = db.UpsertFeed(ctx, storage.Feed{ChannelID: chID, URL: "f2", Active: true})
+
+	articles := []storage.Article{
+		{ChannelID: chID, FeedURL: "f1", GUID: "1", Title: "T1", Link: "L1", FetchedAt: time.Now()},
+		{ChannelID: chID, FeedURL: "f1", GUID: "2", Title: "T2", Link: "L2", FetchedAt: time.Now().Add(-time.Hour)},
+		{ChannelID: chID, FeedURL: "f2", GUID: "3", Title: "T3", Link: "L3", FetchedAt: time.Now()},
+	}
+	mustSave(t, db, articles)
+
+	res, err := db.GetLatestPerFeed(ctx, chID, 1)
+	if err != nil {
+		t.Fatalf("GetLatestPerFeed failed: %v", err)
+	}
+
+	if len(res) != 2 {
+		t.Errorf("expected 2 articles (one from each active feed), got %d", len(res))
+	}
+
+	// Проверка фильтрации по channel_id
+	chID2 := mustCreateChannel(t, db, "test2")
+	_ = db.UpsertFeed(ctx, storage.Feed{ChannelID: chID2, URL: "f3", Active: true})
+	
+	mustSave(t, db, []storage.Article{
+		{ChannelID: chID2, FeedURL: "f3", GUID: "4", Title: "T4", Link: "L4", FetchedAt: time.Now()},
+	})
+
+	res2, _ := db.GetLatestPerFeed(ctx, chID2, 1)
+	if len(res2) != 1 || res2[0].Title != "T4" {
+		t.Errorf("expected T4, got %v", res2)
+	}
+
+	// Делаем единственный фид второго канала неактивным
+	feeds, _ := db.GetFeeds(ctx, chID2)
+	f3 := feeds[0]
+	f3.Active = false
+	_ = db.UpsertFeed(ctx, f3)
+
+	res3, _ := db.GetLatestPerFeed(ctx, chID2, 1)
+	if len(res3) != 0 {
+		t.Errorf("expected 0 articles for inactive feed, got %d", len(res3))
 	}
 }
 

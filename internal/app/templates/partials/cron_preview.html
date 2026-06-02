@@ -1,0 +1,9 @@
+{{if .Error}}
+    <span class="text-rose-400 text-[10px]">❌ {{.Error}}</span>
+{{else}}
+    {{if .NextRuns}}
+        <div class="text-[10px] text-emerald-400 font-medium">
+            Следующий запуск: {{index .NextRuns 0}}
+        </div>
+    {{end}}
+{{end}}

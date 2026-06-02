@@ -1,0 +1,72 @@
+<div id="channel-{{.ID}}" class="bg-slate-800/30 rounded-xl border border-slate-700 overflow-hidden shadow-xl">
+    <div class="px-6 py-4 border-b border-slate-700 bg-slate-800/50 flex justify-between items-center">
+        <div class="flex items-center gap-3">
+            <div>
+                <div class="flex items-center gap-2">
+                    <h2 class="text-xl font-bold text-sky-400">{{.Name}}</h2>
+                    <button hx-post="/trigger/update-channel-name?id={{.ID}}&chat_id={{.TelegramChatID}}" 
+                            hx-target="#channel-{{.ID}}"
+                            hx-swap="outerHTML"
+                            class="text-slate-500 hover:text-sky-400 transition-colors" title="Обновить название из Telegram">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
+                            <path fill-rule="evenodd" d="M4 2a1 1 0 011 1v2.101a7.002 7.002 0 0111.601 2.566 1 1 0 11-1.885.666A5.002 5.002 0 005.999 7H9a1 1 0 010 2H4a1 1 0 01-1-1V3a1 1 0 011-1zm.008 9.057a1 1 0 011.276.61A5.002 5.002 0 0014.001 13H11a1 1 0 110-2h5a1 1 0 011 1v5a1 1 0 11-2 0v-2.101a7.002 7.002 0 01-11.601-2.566 1 1 0 01.61-1.276z" clip-rule="evenodd" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="text-xs text-slate-500 flex flex-col gap-1">
+                    <div class="flex items-center gap-2">
+                        <span>Chat: {{.TelegramChatID}}</span>
+                        <span class="text-slate-700">|</span>
+                        <form hx-post="/trigger/update-channel-cron?id={{.ID}}" 
+                              hx-target="#channel-{{.ID}}"
+                              hx-swap="outerHTML"
+                              class="flex items-center gap-1 group/cron">
+                            <span class="text-slate-500">Cron:</span>
+                            <input type="text" name="cron" value="{{.DigestCron}}" 
+                                class="bg-transparent border-b border-dotted border-slate-700 hover:border-sky-500 
+                                focus:border-sky-500 focus:outline-none transition-colors 
+                                text-slate-400 py-0 w-32"
+                                hx-get="/dashboard/cron-preview?timezone={{.Timezone}}"
+                                hx-trigger="keyup changed delay:300ms"
+                                hx-target="#cron-preview-{{.ID}}"
+                                title="Формат: минута час день месяц день_недели (напр. 0 9,21 * * *)"
+                                onchange="this.form.dispatchEvent(new Event('submit'))">
+                        </form>
+                    </div>
+                    <div id="cron-preview-{{.ID}}" class="min-h-[1rem]">
+                        {{template "cron_preview.html" .}}
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="flex gap-2">
+            <button hx-post="/trigger/latest-bot?id={{.ID}}" hx-swap="none" class="text-xs bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded transition">🤖 Latest</button>
+            <button hx-post="/trigger/digest-bot?id={{.ID}}" hx-swap="none" class="text-xs bg-violet-600 hover:bg-violet-500 px-3 py-1 rounded transition">👤 Preview</button>
+            <button hx-post="/trigger/digest?id={{.ID}}" hx-swap="none" class="text-xs bg-emerald-600 hover:bg-emerald-500 px-3 py-1 rounded transition">📢 Publish</button>
+            <button hx-post="/trigger/del-channel?id={{.ID}}" hx-confirm="Удалить канал?" hx-target="#channel-{{.ID}}" hx-swap="delete" class="text-xs text-rose-400 hover:text-rose-300">Удалить</button>
+        </div>
+    </div>
+    
+    <div class="p-6 grid grid-cols-2 md:grid-cols-4 gap-4 bg-slate-900/20">
+        <div class="text-center">
+            <div class="text-slate-500 text-[10px] uppercase">Собрано</div>
+            <div class="text-lg font-bold">{{.Stats.TotalArticles}}</div>
+        </div>
+        <div class="text-center">
+            <div class="text-slate-500 text-[10px] uppercase">Отправлено</div>
+            <div class="text-lg font-bold text-emerald-400">{{.Stats.SentArticles}}</div>
+        </div>
+        <div class="text-center">
+            <div class="text-slate-500 text-[10px] uppercase">В очереди</div>
+            <div class="text-lg font-bold text-amber-400">{{.Unsent}}</div>
+        </div>
+        <div class="text-center">
+            <div class="text-slate-500 text-[10px] uppercase">Последний сбор</div>
+            <div class="text-sm font-medium pt-1">{{if .Stats.LastFetchedAt.IsZero}}никогда{{else}}{{.Stats.LastFetchedAt.Format "02 Jan 15:04"}}{{end}}</div>
+        </div>
+    </div>
+
+    <div class="px-6 py-4" id="feed-list-{{.ID}}">
+        {{template "feed_list.html" .}}
+    </div>
+</div>

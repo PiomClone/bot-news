@@ -64,7 +64,11 @@ func (s *SimpleSummarizer) Summarize(_ context.Context, articles []storage.Artic
 	}
 
 	var sb strings.Builder
-	date := time.Now().Format("2 January 2006")
+	loc, _ := time.LoadLocation("Europe/Moscow")
+	if loc == nil {
+		loc = time.UTC
+	}
+	date := time.Now().In(loc).Format("2 January 2006")
 	fmt.Fprintf(&sb, "<b>Дайджест за %s</b>\n\n", date)
 
 	for _, a := range articles {

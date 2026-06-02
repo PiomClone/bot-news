@@ -51,6 +51,12 @@ func TestSplitMessage(t *testing.T) {
 		{"Split on newline", "line1\nline2", 6, 2},
 		{"Split middle of line", "1234567890", 5, 2},
 		{"Many lines", "l1\nl2\nl3\nl4", 3, 4},
+		{
+			name:    "Keeps HTML balanced across chunks",
+			text:    "<b>Тема</b>\n- <a href=\"https://example.com/1\">первая ссылка</a>\n- <a href=\"https://example.com/2\">вторая ссылка</a>\n- <a href=\"https://example.com/3\">третья ссылка</a>",
+			maxLen:  70,
+			wantLen: 3,
+		},
 	}
 
 	for _, tt := range tests {
@@ -64,7 +70,33 @@ func TestSplitMessage(t *testing.T) {
 					t.Errorf("chunk too long: %q", chunk)
 				}
 			}
+			if tt.name == "Keeps HTML balanced across chunks" {
+				for _, chunk := range got {
+					if strings.Count(chunk, "<a ") != strings.Count(chunk, "</a>") {
+						t.Errorf("unbalanced link tag in chunk %q", chunk)
+					}
+					if strings.Count(chunk, "<b>") != strings.Count(chunk, "</b>") {
+						t.Errorf("unbalanced bold tag in chunk %q", chunk)
+					}
+				}
+			}
 		})
+	}
+}
+
+func TestSplitMessage_ReopensHTMLTags(t *testing.T) {
+	text := "<b>" + strings.Repeat("Очень длинный заголовок ", 8) + "</b>"
+
+	got := splitMessage(text, 40)
+	if len(got) < 2 {
+		t.Fatalf("expected multiple chunks, got %v", got)
+	}
+
+	if !strings.HasPrefix(got[1], "<b>") {
+		t.Fatalf("second chunk should reopen <b>: %q", got[1])
+	}
+	if !strings.Contains(got[0], "</b>") {
+		t.Fatalf("first chunk should close <b>: %q", got[0])
 	}
 }
 

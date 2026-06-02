@@ -18,7 +18,14 @@ func (f *mockFetcher) FetchAll(ctx context.Context, urls []string) ([]feed.Fetch
 	}
 	var res []feed.FetchResult
 	for _, u := range urls {
-		res = append(res, feed.FetchResult{URL: u, Articles: f.articles})
+		articles := make([]storage.Article, len(f.articles))
+		copy(articles, f.articles)
+		for i := range articles {
+			if articles[i].FeedURL == "" {
+				articles[i].FeedURL = u
+			}
+		}
+		res = append(res, feed.FetchResult{URL: u, Articles: articles})
 	}
 	return res, nil
 }

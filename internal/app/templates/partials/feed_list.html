@@ -1,0 +1,47 @@
+<h3 class="text-sm font-semibold mb-3 text-slate-400">📡 Источники RSS ({{len .Feeds}})</h3>
+<div class="overflow-x-auto">
+    <table class="w-full text-left text-xs">
+        <tbody class="divide-y divide-slate-700/50">
+            {{range .Feeds}}
+            <tr class="group" id="feed-{{.ID}}">
+                <td class="py-2 w-16">
+                    <span class="px-2 py-0.5 rounded-full {{if .Active}}bg-emerald-500/10 text-emerald-400{{else}}bg-slate-500/10 text-slate-400{{end}}">
+                        {{if .Active}}OK{{else}}Off{{end}}
+                    </span>
+                </td>
+                <td class="py-2">
+                    <form hx-post="/trigger/update-feed-title?id={{.ID}}" 
+                          hx-target="#feed-list-{{.ChannelID}}"
+                          hx-swap="innerHTML"
+                          class="flex items-center">
+                        <input type="text" name="title" 
+                            value="{{if .Title}}{{.Title}}{{else}}{{.URL}}{{end}}" 
+                            class="bg-transparent border-b border-transparent hover:border-slate-600 
+                            focus:border-sky-500 focus:outline-none transition-colors font-medium 
+                            text-slate-200 group-hover:text-sky-400 py-0 w-full"
+                            onchange="this.form.dispatchEvent(new Event('submit'))">
+                    </form>
+                    <div class="text-[10px] text-slate-500">{{.URL}}</div>
+                </td>
+                <td class="py-2 text-right">
+                    <button hx-post="/trigger/del-feed?id={{.ID}}&channel_id={{.ChannelID}}" 
+                            hx-target="#feed-list-{{.ChannelID}}"
+                            hx-swap="innerHTML"
+                            class="text-rose-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity">×</button>
+                </td>
+            </tr>
+            {{end}}
+        </tbody>
+    </table>
+</div>
+<form hx-post="/trigger/add-feed?channel_id={{.ID}}" 
+      hx-target="#feed-list-{{.ID}}"
+      hx-swap="innerHTML"
+      hx-on::after-request="if(event.detail.successful) this.reset()"
+      class="mt-4 flex gap-2">
+    <input type="url" name="url" placeholder="Новый RSS URL" required class="flex-1 bg-slate-900/50 border border-slate-700 rounded px-3 py-1 text-xs">
+    <button class="bg-sky-600 px-4 py-1 rounded text-xs flex items-center gap-1">
+         <span class="htmx-indicator animate-spin">⏳</span>
+         Добавить
+    </button>
+</form>
