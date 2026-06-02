@@ -212,7 +212,7 @@ func TestTelegram_ListenCommands(_ *testing.T) {
 	cancel() // Сразу отменяем, чтобы ListenCommands завершился после старта
 
 	tg.ListenCommands(ctx, 123,
-		func() {}, func() {},
+		func(string) {}, func() {},
 		func() string { return "" }, func() string { return "" },
 		func() int { return 0 },
 		func() ([]storage.Feed, error) { return nil, nil },

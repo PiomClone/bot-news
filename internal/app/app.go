@@ -1,12 +1,14 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
 	"html"
 	"html/template"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -36,7 +38,7 @@ type Notifier interface {
 	SendToAdmin(ctx context.Context, adminID int64, text string) error
 	GetChatTitle(chatID string) (string, error)
 	ListenCommands(ctx context.Context, adminID int64,
-		onFetch, onDigest func(),
+		onFetch func(chatID string), onDigest func(),
 		onStats, onLatest func() string,
 		onDigestCount func() int,
 		onFeeds func() ([]storage.Feed, error),
@@ -58,6 +60,26 @@ type App struct {
 	notif   Notifier
 	cron    *cron.Cron
 	mu      sync.Mutex
+}
+
+type channelData struct {
+	storage.Channel
+	Feeds       []storage.Feed
+	Stats       storage.Stats
+	Unsent      int
+	NextRun     string
+	Description string
+	NextRuns    []string
+	Error       string
+}
+
+type dashboardData struct {
+	Channels    []channelData
+	AILimits    template.HTML
+	Version     string
+	Token       string
+	TLSEnabled  bool
+	FetchReport *FetchReport
 }
 
 func NewApp(cfg config.Config) (*App, error) {
@@ -137,7 +159,14 @@ func (a *App) Run() {
 		go func() {
 			defer wg.Done()
 			a.notif.ListenCommands(ctx, a.cfg.TelegramAdminID,
-				func() { a.FetchAll(ctx) },
+				func(chatID string) {
+					report, err := a.FetchAll(ctx)
+					if err != nil {
+						_ = a.notif.SendToChat(ctx, chatID, fmt.Sprintf("❌ Сбор статей завершился с ошибкой: %s", html.EscapeString(err.Error())))
+						return
+					}
+					_ = a.notif.SendToChat(ctx, chatID, a.formatFetchReportTelegram(report))
+				},
 				func() {
 					channels, _ := a.db.GetChannels(ctx)
 					for _, ch := range channels {
@@ -224,7 +253,7 @@ func (a *App) Run() {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		a.FetchAll(ctx)
+		_, _ = a.FetchAll(ctx)
 	}()
 
 	quit := make(chan os.Signal, 1)
@@ -239,7 +268,7 @@ func (a *App) Run() {
 
 func (a *App) RunNow() {
 	ctx := context.Background()
-	a.FetchAll(ctx)
+	_, _ = a.FetchAll(ctx)
 	channels, _ := a.db.GetChannels(ctx)
 	for _, ch := range channels {
 		if ch.Active {
@@ -290,7 +319,7 @@ func (a *App) setupCron(ctx context.Context) {
 	a.mu.Unlock()
 
 	fetchSpec := fmt.Sprintf("@every %dm", a.cfg.FetchIntervalMin)
-	if _, err := c.AddFunc(fetchSpec, func() { a.FetchAll(ctx) }); err != nil {
+	if _, err := c.AddFunc(fetchSpec, func() { _, _ = a.FetchAll(ctx) }); err != nil {
 		slog.Error("ошибка регистрации cron fetch", "error", err)
 	}
 
@@ -311,54 +340,144 @@ func (a *App) setupCron(ctx context.Context) {
 	c.Start()
 }
 
-func (a *App) FetchAll(ctx context.Context) {
+func (a *App) FetchAll(ctx context.Context) (FetchReport, error) {
+	report := FetchReport{}
+
 	channels, err := a.db.GetChannels(ctx)
 	if err != nil {
 		slog.Error("ошибка получения каналов для fetch", "error", err)
-		return
+		return report, err
 	}
 
 	for _, ch := range channels {
 		if !ch.Active {
 			continue
 		}
+		report.ActiveChannels++
+
 		feeds, err := a.db.GetFeeds(ctx, ch.ID)
 		if err != nil {
 			slog.Error("ошибка получения фидов", "channel", ch.Name, "error", err)
-			continue
+			return report, err
 		}
 
 		var urls []string
+		feedByURL := make(map[string]storage.Feed)
+		chReport := FetchChannelReport{
+			ChannelID:   ch.ID,
+			ChannelName: ch.Name,
+		}
 		for _, f := range feeds {
 			if f.Active {
 				urls = append(urls, f.URL)
+				feedByURL[f.URL] = f
+				report.ActiveFeeds++
 			}
 		}
 
+		report.Channels = append(report.Channels, chReport)
 		if len(urls) == 0 {
 			continue
 		}
 
-		results, _ := a.fetcher.FetchAll(ctx, urls)
+		results, err := a.fetcher.FetchAll(ctx, urls)
+		if err != nil {
+			return report, err
+		}
+		resultByURL := make(map[string]feed.FetchResult, len(results))
+		for _, res := range results {
+			resultByURL[res.URL] = res
+		}
 
 		var articles []storage.Article
-		for _, res := range results {
-			if res.Err != nil {
-				// В будущем можно добавить UpdateFeedStatus по ID
+		for _, url := range urls {
+			f := feedByURL[url]
+			label := f.Title
+			if label == "" {
+				label = sourceLabel(f.URL)
+			}
+
+			res, ok := resultByURL[url]
+			feedReport := FetchFeedReport{
+				ChannelID:   ch.ID,
+				ChannelName: ch.Name,
+				FeedURL:     url,
+				FeedTitle:   label,
+			}
+
+			if !ok {
+				missingErr := fmt.Errorf("результат fetch для фида не получен")
+				feedReport.Status = FetchStatusError
+				feedReport.ErrorMessage = missingErr.Error()
+				report.ErrorFeeds++
+				chReport.Feeds = append(chReport.Feeds, feedReport)
+				_ = a.db.UpdateFeedStatus(ctx, url, missingErr)
 				continue
 			}
+
+			if res.Err != nil {
+				feedReport.Status = FetchStatusError
+				feedReport.ErrorMessage = res.Err.Error()
+				report.ErrorFeeds++
+				chReport.Feeds = append(chReport.Feeds, feedReport)
+				_ = a.db.UpdateFeedStatus(ctx, url, res.Err)
+				continue
+			}
+
+			feedReport.FetchedCount = len(res.Articles)
+			if feedReport.FetchedCount == 0 {
+				feedReport.Status = FetchStatusEmpty
+				report.EmptyFeeds++
+			} else {
+				feedReport.Status = FetchStatusSuccess
+				report.SuccessFeeds++
+				report.TotalArticles += feedReport.FetchedCount
+			}
+
 			for i := range res.Articles {
 				res.Articles[i].ChannelID = ch.ID
 			}
 			articles = append(articles, res.Articles...)
+			chReport.Feeds = append(chReport.Feeds, feedReport)
+			_ = a.db.UpdateFeedStatus(ctx, url, nil)
 		}
+		report.Channels[len(report.Channels)-1] = chReport
 
-		if err := a.db.SaveArticles(ctx, articles); err != nil {
-			slog.Error("ошибка сохранения статей", "channel", ch.Name, "error", err)
-			continue
+		if len(articles) > 0 {
+			if err := a.db.SaveArticles(ctx, articles); err != nil {
+				slog.Error("ошибка сохранения статей", "channel", ch.Name, "error", err)
+				return report, err
+			}
 		}
-		slog.Info("статьи получены и сохранены", "channel", ch.Name, "count", len(articles))
+		slog.Info("статьи получены и сохранены",
+			"channel", ch.Name,
+			"articles", len(articles),
+			"success_feeds", countFeedsByStatus(chReport.Feeds, FetchStatusSuccess),
+			"empty_feeds", countFeedsByStatus(chReport.Feeds, FetchStatusEmpty),
+			"error_feeds", countFeedsByStatus(chReport.Feeds, FetchStatusError),
+		)
 	}
+
+	slog.Info("fetch завершен",
+		"channels", report.ActiveChannels,
+		"feeds", report.ActiveFeeds,
+		"success_feeds", report.SuccessFeeds,
+		"empty_feeds", report.EmptyFeeds,
+		"error_feeds", report.ErrorFeeds,
+		"articles", report.TotalArticles,
+	)
+	report.CompletedAt = time.Now()
+	return report, nil
+}
+
+func countFeedsByStatus(feeds []FetchFeedReport, status FetchStatus) int {
+	total := 0
+	for _, feed := range feeds {
+		if feed.Status == status {
+			total++
+		}
+	}
+	return total
 }
 
 func (a *App) Digest(ctx context.Context, ch storage.Channel) {
@@ -544,27 +663,9 @@ func (a *App) cleanup(ctx context.Context) {
 	}
 }
 
-func (a *App) getDashboardData(ctx context.Context, token string) interface{} {
+func (a *App) getDashboardData(ctx context.Context, token string, report *FetchReport) dashboardData {
 	channels, _ := a.db.GetChannels(ctx)
-
-	type channelData struct {
-		storage.Channel
-		Feeds       []storage.Feed
-		Stats       storage.Stats
-		Unsent      int
-		NextRun     string
-		Description string
-		NextRuns    []string
-		Error       string
-	}
-
-	var data struct {
-		Channels   []channelData
-		AILimits   template.HTML
-		Version    string
-		Token      string
-		TLSEnabled bool
-	}
+	var data dashboardData
 
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 
@@ -580,7 +681,7 @@ func (a *App) getDashboardData(ctx context.Context, token string) interface{} {
 				loc := a.loc(ch.Timezone)
 				curr := time.Now().In(loc)
 				nextRun = sched.Next(curr).Format("02 Jan 15:04")
-				
+
 				// Заполняем 5 ближайших для превью
 				temp := curr
 				for i := 0; i < 5; i++ {
@@ -605,11 +706,12 @@ func (a *App) getDashboardData(ctx context.Context, token string) interface{} {
 	data.Version = "1.3.0"
 	data.Token = token
 	data.TLSEnabled = a.cfg.TLSEnabled
+	data.FetchReport = report
 
 	return data
 }
 
-func (a *App) getChannelData(ctx context.Context, channelID int64) interface{} {
+func (a *App) getChannelData(ctx context.Context, channelID int64) channelData {
 	channels, _ := a.db.GetChannels(ctx)
 	var ch storage.Channel
 	for _, c := range channels {
@@ -631,7 +733,7 @@ func (a *App) getChannelData(ctx context.Context, channelID int64) interface{} {
 			loc := a.loc(ch.Timezone)
 			curr := time.Now().In(loc)
 			nextRun = sched.Next(curr).Format("02 Jan 15:04")
-			
+
 			temp := curr
 			for i := 0; i < 5; i++ {
 				temp = sched.Next(temp)
@@ -640,16 +742,7 @@ func (a *App) getChannelData(ctx context.Context, channelID int64) interface{} {
 		}
 	}
 
-	return struct {
-		storage.Channel
-		Feeds       []storage.Feed
-		Stats       storage.Stats
-		Unsent      int
-		NextRun     string
-		Description string
-		NextRuns    []string
-		Error       string
-	}{
+	return channelData{
 		Channel:     ch,
 		Feeds:       feeds,
 		Stats:       stats,
@@ -803,7 +896,7 @@ func (a *App) RegisterTriggers(ctx context.Context, mux *http.ServeMux) {
 
 		parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 		sched, err := parser.Parse(cronSpec)
-		
+
 		data := struct {
 			Error       string
 			Description string
@@ -840,9 +933,17 @@ func (a *App) RegisterTriggers(ctx context.Context, mux *http.ServeMux) {
 	}))
 
 	mux.HandleFunc("POST /trigger/fetch-all", a.AuthMiddleware(func(w http.ResponseWriter, r *http.Request) {
-		a.FetchAll(ctx)
+		report, err := a.FetchAll(ctx)
+		if err != nil {
+			http.Error(w, "fetch failed: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
 		if r.Header.Get("HX-Request") != "" {
-			w.WriteHeader(http.StatusOK)
+			data := a.getDashboardData(ctx, r.URL.Query().Get("token"), &report)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if err := a.renderFetchHTMXResponse(w, data); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
 			return
 		}
 		a.redirect(w, r)
@@ -885,7 +986,7 @@ func (a *App) RegisterTriggers(ctx context.Context, mux *http.ServeMux) {
 		a.setupCron(ctx)
 
 		if r.Header.Get("HX-Request") != "" {
-			data := a.getDashboardData(ctx, r.URL.Query().Get("token"))
+			data := a.getDashboardData(ctx, r.URL.Query().Get("token"), nil)
 			_ = a.renderTemplate(w, "channel-list", data)
 			return
 		}
@@ -1069,13 +1170,34 @@ func (a *App) RegisterTriggers(ctx context.Context, mux *http.ServeMux) {
 func (a *App) HandleDashboard(ctx context.Context) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := r.URL.Query().Get("token")
-		data := a.getDashboardData(ctx, token)
+		data := a.getDashboardData(ctx, token, nil)
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		if err := a.renderTemplate(w, "dashboard", data); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	}
+}
+
+func (a *App) renderFetchHTMXResponse(w io.Writer, data dashboardData) error {
+	var fetchBuf bytes.Buffer
+	if err := a.renderTemplate(&fetchBuf, "fetch-report", data); err != nil {
+		return err
+	}
+
+	var channelBuf bytes.Buffer
+	if err := a.renderTemplate(&channelBuf, "channel-list", data); err != nil {
+		return err
+	}
+
+	if _, err := fmt.Fprint(w, fetchBuf.String()); err != nil {
+		return err
+	}
+	_, err := fmt.Fprintf(w,
+		"\n<div id=\"channel-list\" class=\"grid grid-cols-1 gap-8\" hx-swap-oob=\"outerHTML\">%s</div>",
+		channelBuf.String(),
+	)
+	return err
 }
 
 func sourceLabel(feedURL string) string {

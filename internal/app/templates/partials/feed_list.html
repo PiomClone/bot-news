@@ -22,6 +22,15 @@
                             onchange="this.form.dispatchEvent(new Event('submit'))">
                     </form>
                     <div class="text-[10px] text-slate-500">{{.URL}}</div>
+                    <div class="mt-1 text-[10px]">
+                        {{if .LastError}}
+                        <span class="text-rose-400">Ошибка: {{.LastError}}</span>
+                        {{else if .LastFetchedAt.IsZero}}
+                        <span class="text-slate-500">Ещё не опрашивался</span>
+                        {{else}}
+                        <span class="text-emerald-400">Последний fetch: {{.LastFetchedAt.Format "02 Jan 15:04"}}</span>
+                        {{end}}
+                    </div>
                 </td>
                 <td class="py-2 text-right">
                     <button hx-post="/trigger/del-feed?id={{.ID}}&channel_id={{.ChannelID}}" 

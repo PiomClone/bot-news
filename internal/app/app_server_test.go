@@ -11,6 +11,7 @@ import (
 
 	"bot-news/internal/app"
 	"bot-news/internal/config"
+	"bot-news/internal/feed"
 	"bot-news/internal/storage"
 )
 
@@ -94,6 +95,62 @@ func TestAppServer_Triggers(t *testing.T) {
 		feeds, _ := db.GetAllFeeds(context.Background())
 		if len(feeds) != 1 || feeds[0].URL != "http://new-feed" {
 			t.Errorf("фид не добавился: %v", feeds)
+		}
+	})
+
+	t.Run("Fetch All HTMX", func(t *testing.T) {
+		channels, _ := db.GetChannels(context.Background())
+		if len(channels) == 0 {
+			t.Fatal("expected channel to exist")
+		}
+		if err := db.UpsertFeed(context.Background(), storage.Feed{
+			ChannelID: channels[0].ID,
+			URL:       "http://broken-feed",
+			Title:     "Broken Feed",
+			Active:    true,
+		}); err != nil {
+			t.Fatalf("UpsertFeed: %v", err)
+		}
+
+		fetcher := &mockFetcher{
+			results: map[string]feed.FetchResult{
+				"http://new-feed": {
+					URL: "http://new-feed",
+					Articles: []storage.Article{
+						{GUID: "1", Title: "Fetched", Link: "http://article"},
+					},
+				},
+				"http://broken-feed": {
+					URL: "http://broken-feed",
+					Err: fmt.Errorf("boom"),
+				},
+			},
+		}
+		a = app.NewAppWithDeps(cfg, db, fetcher, sum, notif)
+		mux = http.NewServeMux()
+		a.RegisterTriggers(context.Background(), mux)
+
+		req := httptest.NewRequest("POST", "/trigger/fetch-all?token=secret", nil)
+		req.Header.Set("HX-Request", "true")
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+
+		if rr.Code != http.StatusOK {
+			t.Fatalf("ожидали 200, получили %d", rr.Code)
+		}
+
+		body := rr.Body.String()
+		if !strings.Contains(body, "Результат fetch") {
+			t.Fatalf("нет fetch-отчета в ответе: %s", body)
+		}
+		if !strings.Contains(body, "hx-swap-oob=\"outerHTML\"") {
+			t.Fatalf("нет OOB-обновления channel-list: %s", body)
+		}
+		if !strings.Contains(body, "boom") {
+			t.Fatalf("нет текста ошибки фида в ответе: %s", body)
+		}
+		if !strings.Contains(body, "Последний fetch") {
+			t.Fatalf("обновленный статус фида не попал в ответ: %s", body)
 		}
 	})
 }

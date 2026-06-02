@@ -126,7 +126,7 @@ func (r numericRecipient) Recipient() string { return strconv.FormatInt(int64(r)
 func (t *Telegram) ListenCommands(
 	ctx context.Context,
 	adminID int64,
-	onFetch, onDigest func(),
+	onFetch func(chatID string), onDigest func(),
 	onStats, onLatest func() string,
 	onDigestCount func() int,
 	onFeeds func() ([]storage.Feed, error),
@@ -158,7 +158,7 @@ func (t *Telegram) ListenCommands(
 
 func (t *Telegram) setupCommands(
 	allowed func(telebot.Context) bool,
-	onFetch, onDigest func(),
+	onFetch func(chatID string), onDigest func(),
 	onStats, onLatest func() string,
 	onDigestCount func() int,
 	onFeeds func() ([]storage.Feed, error),
@@ -170,7 +170,7 @@ func (t *Telegram) setupCommands(
 		if !allowed(c) {
 			return nil
 		}
-		go onFetch()
+		go onFetch(recipientFromContext(c, t.chat.Recipient()))
 		return c.Reply("⏳ Сбор статей запущен...", &telebot.SendOptions{ParseMode: telebot.ModeHTML})
 	})
 	t.bot.Handle("/digest", func(c telebot.Context) error {
@@ -264,7 +264,7 @@ func (t *Telegram) makeFeedsKeyboard(feeds []storage.Feed) *telebot.ReplyMarkup 
 
 func (t *Telegram) setupCallbacks(
 	allowed func(telebot.Context) bool,
-	onFetch, onDigest func(),
+	onFetch func(chatID string), onDigest func(),
 	onDigestCount func() int,
 	onFeeds func() ([]storage.Feed, error),
 	onToggleFeed func(string) error,
@@ -277,7 +277,7 @@ func (t *Telegram) setupCallbacks(
 		if !allowed(c) {
 			return c.Respond()
 		}
-		go onFetch()
+		go onFetch(recipientFromContext(c, t.chat.Recipient()))
 		return c.Respond(&telebot.CallbackResponse{Text: "⏳ Сбор статей запущен..."})
 	})
 	t.bot.Handle(&btnDigest, func(c telebot.Context) error {
@@ -325,6 +325,14 @@ func sourceLabel(feedURL string) string {
 		return feedURL
 	}
 	return "@" + name
+}
+
+func recipientFromContext(c telebot.Context, fallback string) string {
+	chat := c.Chat()
+	if chat == nil {
+		return fallback
+	}
+	return chat.Recipient()
 }
 
 // splitMessage делит текст на части.

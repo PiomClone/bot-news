@@ -15,7 +15,7 @@ var (
 
 func init() {
 	// Инициализация шаблонов с использованием ParseFS и glob-паттернов
-	dashboardTmpl = template.Must(template.ParseFS(templatesFS, 
+	dashboardTmpl = template.Must(template.ParseFS(templatesFS,
 		"templates/dashboard.html",
 		"templates/partials/*.html",
 	))
@@ -36,6 +36,8 @@ func (a *App) renderTemplate(w io.Writer, name string, data interface{}) error {
 		target = "ai_limits.html"
 	case "cron-preview":
 		target = "cron_preview.html"
+	case "fetch-report":
+		target = "fetch_report.html"
 	}
 
 	return dashboardTmpl.ExecuteTemplate(w, target, data)

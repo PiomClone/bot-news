@@ -43,7 +43,8 @@
             </h1>
             <div class="flex gap-2">
                 <button hx-post="/trigger/fetch-all{{if not .TLSEnabled}}?token={{.Token}}{{end}}" 
-                        hx-swap="none"
+                        hx-target="#fetch-report-container"
+                        hx-swap="outerHTML"
                         class="bg-sky-600 hover:bg-sky-500 px-4 py-2 rounded text-sm font-medium transition flex items-center gap-2">
                     <span class="inline-block htmx-indicator animate-spin">🔄</span>
                     🔄 Собрать все
@@ -54,6 +55,10 @@
                 </button>
             </div>
         </header>
+
+        <div id="fetch-report-container">
+            {{template "fetch_report.html" .}}
+        </div>
 
         <div id="ai-limits-container" hx-get="/dashboard/ai-limits{{if not .TLSEnabled}}?token={{.Token}}{{end}}" hx-trigger="load, every 10s, ai-updated from:body">
             {{template "ai_limits.html" .}}
