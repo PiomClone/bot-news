@@ -5,6 +5,7 @@ configs/.env
 
 # Артефакты сборки
 /bot-news
+/main
 build/
 tmp/
 
