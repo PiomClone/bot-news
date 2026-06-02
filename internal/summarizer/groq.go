@@ -3,6 +3,7 @@ package summarizer
 import (
 	"context"
 	"fmt"
+	"html"
 	"log/slog"
 	"strings"
 	"time"
@@ -84,6 +85,7 @@ func (g *GroqSummarizer) Summarize(ctx context.Context, articles []storage.Artic
 			"3. ГЛАВНОЕ: Если есть одна супер-важная новость, вынеси её в самое начало под заголовком <b>🔥 ГЛАВНОЕ СОБЫТИЕ</b>.\n"+
 			"4. ФОРМАТ ПУНКТОВ: Под каждой темой пиши краткие и емкие пункты «- ». Каждый пункт должен быть законченной мыслью.\n"+
 			"5. ССЫЛКИ: В каждом пункте ОБЯЗАТЕЛЬНО делай гиперссылки на ключевые слова: <a href=\"url\">слово</a>. Если источников несколько, дай ссылки на каждый: (<a href=\"url1\">ист1</a>, <a href=\"url2\">ист2</a>).\n"+
+			"5.1. ЗАПРЕТ: Ни один пункт списка не может остаться без хотя бы одной ссылки <a href=\"...\">...</a> на исходный пост.\n"+
 			"6. ЭМОДЗИ: В начале каждого пункта ставь эмодзи канала-источника (см. список ниже).\n"+
 			"7. МУСОР: Игнорируй рекламу, вакансии, анонсы вебинаров и малозначимые события.\n\n"+
 			"Список каналов и их эмодзи:\n%s\n"+
@@ -123,5 +125,65 @@ func (g *GroqSummarizer) Summarize(ctx context.Context, articles []storage.Artic
 		return "", fmt.Errorf("groq: пустой ответ")
 	}
 
-	return resp.Choices[0].Message.Content, nil
+	return ensureBulletLinks(resp.Choices[0].Message.Content, articles), nil
+}
+
+func ensureBulletLinks(text string, articles []storage.Article) string {
+	lines := strings.Split(text, "\n")
+	usedLinks := make(map[string]bool)
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, "- ") {
+			continue
+		}
+		if strings.Contains(line, "<a ") {
+			markUsedLinks(line, usedLinks)
+			continue
+		}
+
+		link := pickFallbackLink(line, articles, usedLinks)
+		if link == "" {
+			continue
+		}
+		usedLinks[link] = true
+		lines[i] = line + fmt.Sprintf(" (<a href=\"%s\">источник</a>)", html.EscapeString(link))
+	}
+
+	return strings.Join(lines, "\n")
+}
+
+func markUsedLinks(line string, used map[string]bool) {
+	parts := strings.Split(line, "<a href=\"")
+	for _, part := range parts[1:] {
+		link, _, ok := strings.Cut(part, "\"")
+		if ok && link != "" {
+			used[link] = true
+		}
+	}
+}
+
+func pickFallbackLink(line string, articles []storage.Article, used map[string]bool) string {
+	lowerLine := strings.ToLower(line)
+
+	for _, article := range articles {
+		if article.Link == "" || used[article.Link] {
+			continue
+		}
+		source := article.FeedTitle
+		if source == "" {
+			source = sourceLabel(article.FeedURL)
+		}
+		if source != "" && strings.Contains(lowerLine, strings.ToLower(source)) {
+			return article.Link
+		}
+	}
+
+	for _, article := range articles {
+		if article.Link != "" && !used[article.Link] {
+			return article.Link
+		}
+	}
+
+	return ""
 }

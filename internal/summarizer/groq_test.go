@@ -46,6 +46,34 @@ func TestGroqSummarizer_Summarize(t *testing.T) {
 		}
 	})
 
+	t.Run("Missing link in bullet gets fallback source link", func(t *testing.T) {
+		articles := []storage.Article{
+			{
+				FeedTitle: "Tech Feed",
+				FeedURL:   "https://example.com/feed",
+				Link:      "https://example.com/post-1",
+				Title:     "Title 1",
+			},
+		}
+		mock := &mockChatClient{
+			resp: openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{Message: openai.ChatCompletionMessage{
+						Content: "<b>Дайджест</b>\n\n<b>Тема</b>\n- 🚀 Tech Feed: важная новость без ссылки",
+					}},
+				},
+			},
+		}
+		g := &GroqSummarizer{client: mock, model: "test-model"}
+		res, err := g.Summarize(context.Background(), articles)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(res, `<a href="https://example.com/post-1">источник</a>`) {
+			t.Fatalf("expected fallback source link, got %q", res)
+		}
+	})
+
 	t.Run("Error from API", func(t *testing.T) {
 		mock := &mockChatClient{
 			err: errors.New("api error"),
