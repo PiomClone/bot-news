@@ -74,6 +74,37 @@ func TestGroqSummarizer_Summarize(t *testing.T) {
 		}
 	})
 
+	t.Run("Link on next line does not get duplicated", func(t *testing.T) {
+		articles := []storage.Article{
+			{
+				FeedTitle: "Tech Feed",
+				FeedURL:   "https://example.com/feed",
+				Link:      "https://example.com/post-1",
+				Title:     "Title 1",
+			},
+		}
+		mock := &mockChatClient{
+			resp: openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{Message: openai.ChatCompletionMessage{
+						Content: "<b>Дайджест</b>\n\n<b>Тема</b>\n- 🚀 Tech Feed: важная новость\n  подробнее: <a href=\"https://example.com/post-1\">ссылка</a>",
+					}},
+				},
+			},
+		}
+		g := &GroqSummarizer{client: mock, model: "test-model"}
+		res, err := g.Summarize(context.Background(), articles)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if strings.Count(res, `<a href="https://example.com/post-1">`) != 1 {
+			t.Fatalf("expected single source link, got %q", res)
+		}
+		if strings.Contains(res, ">источник</a>") {
+			t.Fatalf("unexpected fallback source link duplication: %q", res)
+		}
+	})
+
 	t.Run("Error from API", func(t *testing.T) {
 		mock := &mockChatClient{
 			err: errors.New("api error"),

@@ -132,25 +132,49 @@ func ensureBulletLinks(text string, articles []storage.Article) string {
 	lines := strings.Split(text, "\n")
 	usedLinks := make(map[string]bool)
 
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if !strings.HasPrefix(trimmed, "- ") {
-			continue
-		}
-		if strings.Contains(line, "<a ") {
-			markUsedLinks(line, usedLinks)
+	for i := 0; i < len(lines); i++ {
+		if !isBulletStart(lines[i]) {
 			continue
 		}
 
-		link := pickFallbackLink(line, articles, usedLinks)
+		end := i + 1
+		for end < len(lines) && !startsNewBlock(lines[end]) {
+			end++
+		}
+
+		block := strings.Join(lines[i:end], "\n")
+		if strings.Contains(block, "<a ") {
+			markUsedLinks(block, usedLinks)
+			i = end - 1
+			continue
+		}
+
+		link := pickFallbackLink(block, articles, usedLinks)
 		if link == "" {
+			i = end - 1
 			continue
 		}
 		usedLinks[link] = true
-		lines[i] = line + fmt.Sprintf(" (<a href=\"%s\">источник</a>)", html.EscapeString(link))
+		lines[i] = lines[i] + fmt.Sprintf(" (<a href=\"%s\">источник</a>)", html.EscapeString(link))
+		i = end - 1
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func isBulletStart(line string) bool {
+	return strings.HasPrefix(strings.TrimSpace(line), "- ")
+}
+
+func startsNewBlock(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return true
+	}
+	if strings.HasPrefix(trimmed, "- ") {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "<b>")
 }
 
 func markUsedLinks(line string, used map[string]bool) {
