@@ -70,7 +70,7 @@ The administrator (`TELEGRAM_ADMIN_ID`) can manage the bot via commands:
 | `DIGEST_CRON` | `CRON_TZ=Europe/Moscow 0 9,21 * * *` | When to send the digest (cron format) |
 | `DB_PATH` | `bot-news.db` | Path to the SQLite file |
 | `GROQ_API_KEY` | — | If empty — simple list without AI |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Groq model (1000 req/day free) |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Groq model (1000 req/day free) |
 | `HEALTH_ADDR` | `:8080` | HTTP health check address |
 | `TRIGGER_SECRET` | — | Bearer token for `/trigger/*` |
 | `TELEGRAM_ADMIN_ID` | — | User ID allowed to send commands to the bot |

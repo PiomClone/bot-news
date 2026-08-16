@@ -36,7 +36,7 @@ func LoadFromEnv() Config {
 		DigestCron:        getEnvOrDefault("DIGEST_CRON", "CRON_TZ=Europe/Moscow 0 9,21 * * *"),
 		DBPath:            getEnvOrDefault("DB_PATH", "bot-news.db"),
 		GroqAPIKey:        os.Getenv("GROQ_API_KEY"),
-		GroqModel:         getEnvOrDefault("GROQ_MODEL", "llama-3.3-70b-versatile"),
+		GroqModel:         getEnvOrDefault("GROQ_MODEL", "openai/gpt-oss-120b"),
 		HealthAddr:        getEnvOrDefault("HEALTH_ADDR", ":8080"),
 		TriggerSecret:     os.Getenv("TRIGGER_SECRET"),
 		Timezone:          getEnvOrDefault("TIMEZONE", "Europe/Moscow"),

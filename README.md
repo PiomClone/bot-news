@@ -70,7 +70,7 @@ make digest-now
 | `DIGEST_CRON` | `CRON_TZ=Europe/Moscow 0 9,21 * * *` | Когда отправлять дайджест (cron) |
 | `DB_PATH` | `bot-news.db` | Путь к файлу SQLite |
 | `GROQ_API_KEY` | — | Если пусто — простой список без AI |
-| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Модель Groq (1000 req/day бесплатно) |
+| `GROQ_MODEL` | `openai/gpt-oss-120b` | Модель Groq (1000 req/day бесплатно) |
 | `HEALTH_ADDR` | `:8080` | Адрес HTTP health check |
 | `TRIGGER_SECRET` | — | Bearer-токен для `/trigger/*` |
 | `TELEGRAM_ADMIN_ID` | — | ID пользователя, которому разрешены команды боту |

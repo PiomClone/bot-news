@@ -36,8 +36,8 @@ func TestLoadFromEnv_Defaults(t *testing.T) {
 	if cfg.DBPath != "bot-news.db" {
 		t.Errorf("DBPath: ожидали 'bot-news.db', получили %q", cfg.DBPath)
 	}
-	if cfg.GroqModel != "llama-3.3-70b-versatile" {
-		t.Errorf("GroqModel: ожидали 'llama-3.3-70b-versatile', получили %q", cfg.GroqModel)
+	if cfg.GroqModel != "openai/gpt-oss-120b" {
+		t.Errorf("GroqModel: ожидали 'openai/gpt-oss-120b', получили %q", cfg.GroqModel)
 	}
 	if cfg.HealthAddr != ":8080" {
 		t.Errorf("HealthAddr: ожидали ':8080', получили %q", cfg.HealthAddr)
