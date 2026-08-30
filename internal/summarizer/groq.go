@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -48,54 +49,47 @@ func (g *GroqSummarizer) Summarize(ctx context.Context, articles []storage.Artic
 		return "", nil
 	}
 
-	// Формируем легенду эмодзи и список статей
-	emojiMap := make(map[string]string)
+	// Формируем список сырых новостей
 	var sb strings.Builder
 	for i, a := range articles {
 		source := a.FeedTitle
 		if source == "" {
 			source = sourceLabel(a.FeedURL)
 		}
-		emoji := GetEmoji(a.FeedURL)
-		emojiMap[source] = emoji
 
 		desc := a.Description
 		if len([]rune(desc)) > 300 {
 			desc = string([]rune(desc)[:300]) + "..."
 		}
-		fmt.Fprintf(&sb, "%d. [%s] Источник: %s\n   Заголовок: %s\n   Описание: %s\n   Ссылка: %s\n",
-			i+1, emoji, source, a.Title, desc, a.Link)
-	}
-
-	var legendSB strings.Builder
-	for name, emoji := range emojiMap {
-		fmt.Fprintf(&legendSB, "- %s %s\n", emoji, name)
+		fmt.Fprintf(&sb, "%d. Источник: %s\n   Заголовок: %s\n   Описание: %s\n   Ссылка: %s\n",
+			i+1, source, a.Title, desc, a.Link)
 	}
 
 	loc, _ := time.LoadLocation("Europe/Moscow")
 	if loc == nil {
 		loc = time.UTC
 	}
-	date := time.Now().In(loc).Format("2 January 2006")
 	prompt := fmt.Sprintf(
-		"Ты — главный редактор ИТ-издания. Твоя задача: превратить список сырых новостей за %s в элитный аналитический дайджест для Telegram.\n\n"+
-			"Критически важные правила группировки:\n"+
-			"1. СИНТЕЗ: Если несколько источников пишут об одном и том же (например, одна и та же новость на Хабре и в Telegram), НЕ делай два пункта. Слей их в один качественный абзац, указав ссылки на все источники.\n"+
-			"2. ГРУППИРОВКА: Объедини статьи по 3-4 глобальным темам. Придумай для каждой темы яркий заголовок с 2-3 эмодзи. Заголовок выдели жирным (тег <b>...</b>).\n"+
-			"3. ГЛАВНОЕ: Если есть одна супер-важная новость, вынеси её в самое начало под заголовком <b>🔥 ГЛАВНОЕ СОБЫТИЕ</b>.\n"+
-			"4. ФОРМАТ ПУНКТОВ: Под каждой темой пиши краткие и емкие пункты «- ». Каждый пункт должен быть законченной мыслью.\n"+
-			"5. ССЫЛКИ: В каждом пункте ОБЯЗАТЕЛЬНО делай гиперссылки на ключевые слова: <a href=\"url\">слово</a>. Если источников несколько, дай ссылки на каждый: (<a href=\"url1\">ист1</a>, <a href=\"url2\">ист2</a>).\n"+
-			"5.1. ЗАПРЕТ: Ни один пункт списка не может остаться без хотя бы одной ссылки <a href=\"...\">...</a> на исходный пост.\n"+
-			"6. ЭМОДЗИ: В начале каждого пункта ставь эмодзи канала-источника (см. список ниже).\n"+
-			"7. МУСОР: Игнорируй рекламу, вакансии, анонсы вебинаров и малозначимые события.\n\n"+
-			"Список каналов и их эмодзи:\n%s\n"+
-			"Формат вывода:\n"+
-			"<b>Дайджест за %s</b>\n\n"+
-			"<b>эмодзи НАЗВАНИЕ ТЕМЫ</b>\n"+
-			"- [эмодзи] @channel: Суть новости с <a href=\"url\">ссылкой</a>.\n"+
+		"Ты — главный редактор новостного издания. Твоя задача: превратить список сырых новостей за последние 8 часов в лаконичную, элитную новостную выжимку для Telegram.\n\n"+
+			"Критически важные правила:\n"+
+			"1. СИНТЕЗ: Если несколько источников пишут об одной и той же новости, объедини их в один качественный пункт.\n"+
+			"2. ГРУППИРОВКА: Объедини новости по 3-5 глобальным тематическим категориям. Для каждой категории придумай заголовок с 2-3 релевантными эмодзи в начале (например: 🇷🇺⚔️🇺🇦, 🚢🌊🇨🇾, 🌍🤝🗣️, 🤖💻📱). Заголовок категории выдели жирным (тег <b>...</b>).\n"+
+			"3. ФОРМАТ ПУНКТОВ:\n"+
+			"   - Каждый пункт начинается с «- » (дефис и пробел).\n"+
+			"   - НЕ ставь эмодзи источника, название канала или '@channel:' в начале пункта. Начинай сразу с текста (например: «Песков заявил...», «Ozon подвергся...»).\n"+
+			"   - Каждый пункт — ровно одно емкое, информативное предложение. НЕ используй жирный текст (<b> или **) внутри текста пункта.\n"+
+			"4. ОРГАНИЧЕСКИЕ ВСТРОЕННЫЕ ССЫЛКИ:\n"+
+			"   - В КАЖДОМ пункте ОБЯЗАТЕЛЬНО сделай гиперссылку <a href=\"url\">слово</a>, встроив её ОРГАНИЧНО внутрь предложения на сказуемое/глагол или ключевое слово (например: «Песков <a href=\"url\">заявил</a> о...», «Ozon <a href=\"url\">подвергся</a> атаке...»).\n"+
+			"   - КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО ставить ссылки в конце предложения вида «[читайте]», «[подробно]», «(источник)».\n"+
+			"   - Если источников несколько, сделай несколько ссылок на разные ключевые слова в предложении.\n"+
+			"5. МУСОР: Игнорируй рекламу, вакансии, анонсы вебинаров и малозначимые события.\n\n"+
+			"Формат вывода (строго соблюдай эту структуру):\n"+
+			"<b>Выжимка за 8 часов:</b>\n\n"+
+			"<b>[2-3 эмодзи] НАЗВАНИЕ КАТЕГОРИИ</b>\n"+
+			"- Субъект <a href=\"url\">глагол</a> продолжение предложения.\n"+
 			"- ...\n\n"+
 			"Материалы для обработки:\n%s",
-		date, legendSB.String(), date, sb.String(),
+		sb.String(),
 	)
 
 	resp, err := g.client.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
@@ -125,7 +119,19 @@ func (g *GroqSummarizer) Summarize(ctx context.Context, articles []storage.Artic
 		return "", fmt.Errorf("groq: пустой ответ")
 	}
 
-	return ensureBulletLinks(resp.Choices[0].Message.Content, articles), nil
+	htmlContent := convertMarkdownToHTML(resp.Choices[0].Message.Content)
+	return ensureBulletLinks(htmlContent, articles), nil
+}
+
+var (
+	reMarkdownLink = regexp.MustCompile(`\[([^\]]+)\]\((https?://[^\s\)]+)\)`)
+	reMarkdownBold = regexp.MustCompile(`\*\*([^*]+)\*\*`)
+)
+
+func convertMarkdownToHTML(text string) string {
+	text = reMarkdownLink.ReplaceAllString(text, `<a href="$2">$1</a>`)
+	text = reMarkdownBold.ReplaceAllString(text, `<b>$1</b>`)
+	return text
 }
 
 func ensureBulletLinks(text string, articles []storage.Article) string {
@@ -155,11 +161,44 @@ func ensureBulletLinks(text string, articles []storage.Article) string {
 			continue
 		}
 		usedLinks[link] = true
-		lines[i] = lines[i] + fmt.Sprintf(" (<a href=\"%s\">источник</a>)", html.EscapeString(link))
+		lines[i] = embedLinkInBulletLine(lines[i], link)
 		i = end - 1
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func embedLinkInBulletLine(line, link string) string {
+	escapedLink := html.EscapeString(link)
+	prefix := "- "
+	trimmed := line
+	hasBullet := false
+	if strings.HasPrefix(line, "- ") {
+		prefix = "- "
+		trimmed = strings.TrimPrefix(line, "- ")
+		hasBullet = true
+	} else if strings.HasPrefix(line, "• ") {
+		prefix = "• "
+		trimmed = strings.TrimPrefix(line, "• ")
+		hasBullet = true
+	}
+
+	if !hasBullet {
+		return line + fmt.Sprintf(" (<a href=\"%s\">ссылка</a>)", escapedLink)
+	}
+
+	words := strings.Fields(trimmed)
+	if len(words) == 0 {
+		return line
+	}
+
+	targetIdx := 0
+	if len(words) > 1 {
+		targetIdx = 1
+	}
+
+	words[targetIdx] = fmt.Sprintf("<a href=\"%s\">%s</a>", escapedLink, words[targetIdx])
+	return prefix + strings.Join(words, " ")
 }
 
 func isBulletStart(line string) bool {

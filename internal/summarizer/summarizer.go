@@ -6,7 +6,6 @@ import (
 	"html"
 	"net/url"
 	"strings"
-	"time"
 
 	"bot-news/internal/storage"
 )
@@ -64,12 +63,7 @@ func (s *SimpleSummarizer) Summarize(_ context.Context, articles []storage.Artic
 	}
 
 	var sb strings.Builder
-	loc, _ := time.LoadLocation("Europe/Moscow")
-	if loc == nil {
-		loc = time.UTC
-	}
-	date := time.Now().In(loc).Format("2 January 2006")
-	fmt.Fprintf(&sb, "<b>Дайджест за %s</b>\n\n", date)
+	fmt.Fprintf(&sb, "<b>Выжимка за 8 часов:</b>\n\n")
 
 	for _, a := range articles {
 		source := a.FeedTitle

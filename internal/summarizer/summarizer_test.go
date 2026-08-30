@@ -87,8 +87,8 @@ func TestSimpleSummarizerHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf(unexpectedErr, err)
 	}
-	if !strings.Contains(text, "Дайджест") {
-		t.Errorf("нет заголовка дайджеста: %s", text)
+	if !strings.Contains(text, "Выжимка") {
+		t.Errorf("нет заголовка выжимки: %s", text)
 	}
 }
 

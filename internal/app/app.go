@@ -29,7 +29,7 @@ import (
 )
 
 const timeFmt = "02 Jan 15:04 MST"
-const digestLookback = 12 * time.Hour
+const digestLookback = 8 * time.Hour
 
 // Notifier — интерфейс для отправки уведомлений.
 type Notifier interface {
@@ -510,7 +510,6 @@ func (a *App) Digest(ctx context.Context, ch storage.Channel) {
 			return
 		}
 	}
-	text += a.statsFooter(ctx, ch.ID, ch.Timezone, len(articles))
 
 	if err := a.db.SaveDigest(ctx, ch.ID, text); err != nil {
 		slog.Error("ошибка сохранения дайджеста в базу", "channel", ch.Name, "error", err)

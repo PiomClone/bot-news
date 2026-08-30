@@ -59,7 +59,7 @@ func TestGroqSummarizer_Summarize(t *testing.T) {
 			resp: openai.ChatCompletionResponse{
 				Choices: []openai.ChatCompletionChoice{
 					{Message: openai.ChatCompletionMessage{
-						Content: "<b>Дайджест</b>\n\n<b>Тема</b>\n- 🚀 Tech Feed: важная новость без ссылки",
+						Content: "<b>Выжимка за 8 часов:</b>\n\n<b>🚀🚀🚀 Тема</b>\n- Tech Feed важная новость без ссылки",
 					}},
 				},
 			},
@@ -69,8 +69,8 @@ func TestGroqSummarizer_Summarize(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if !strings.Contains(res, `<a href="https://example.com/post-1">источник</a>`) {
-			t.Fatalf("expected fallback source link, got %q", res)
+		if !strings.Contains(res, `<a href="https://example.com/post-1">`) {
+			t.Fatalf("expected fallback embedded source link, got %q", res)
 		}
 	})
 
@@ -102,6 +102,29 @@ func TestGroqSummarizer_Summarize(t *testing.T) {
 		}
 		if strings.Contains(res, ">источник</a>") {
 			t.Fatalf("unexpected fallback source link duplication: %q", res)
+		}
+	})
+
+	t.Run("MarkdownToHTML_Conversion", func(t *testing.T) {
+		mock := &mockChatClient{
+			resp: openai.ChatCompletionResponse{
+				Choices: []openai.ChatCompletionChoice{
+					{Message: openai.ChatCompletionMessage{
+						Content: "**Выжимка за 8 часов:**\n\n**🇷🇺⚔️🇺🇦 Война**\n- Песков [заявил](https://t.me/nyannews/74519) о поражении.",
+					}},
+				},
+			},
+		}
+		g := &GroqSummarizer{client: mock, model: "test-model"}
+		res, err := g.Summarize(context.Background(), articles)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if !strings.Contains(res, `<b>Выжимка за 8 часов:</b>`) {
+			t.Errorf("expected <b> tag for bold header, got %q", res)
+		}
+		if !strings.Contains(res, `<a href="https://t.me/nyannews/74519">заявил</a>`) {
+			t.Errorf("expected HTML anchor tag, got %q", res)
 		}
 	})
 
